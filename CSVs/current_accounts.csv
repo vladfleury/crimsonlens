@@ -1,0 +1,6 @@
+Name,Currency,Amount,is_liquid
+MBank,PLN,4433.76,TRUE
+Revolut,PLN,11.79,TRUE
+Priorbank,EUR,1202.54,TRUE
+Priorbank,BYN,0,TRUE
+Apartment deposit,PLN,8300,FALSE

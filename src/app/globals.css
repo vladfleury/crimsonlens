@@ -1,26 +1,48 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=DM+Sans:wght@400;500;600;700&display=swap');
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --color-background: #F5F0E8;
+  --color-foreground: #1a1a1a;
+  --color-sidebar: #111111;
+  --color-card: #FAF8F4;
+  --color-white: #FAF8F4;
+  --color-green: #2DB89A;
+  --color-green-light: #2DB89A33;
+  --color-red: #DC2626;
+  --color-red-light: #DC26261A;
+  --color-gold: #D4A843;
+  --color-gold-light: #D4A8431A;
+  --color-muted: #8A8A8A;
+  --color-border: #F0EDE8;
+  --font-heading: 'Plus Jakarta Sans', sans-serif;
+  --font-body: 'DM Sans', sans-serif;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font-family: var(--font-body);
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-heading);
+  letter-spacing: -0.02em;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #d1d1d1;
+  border-radius: 3px;
+}
+
+/* Recharts tooltip */
+.recharts-tooltip-wrapper {
+  outline: none !important;
 }
