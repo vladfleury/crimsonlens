@@ -13,6 +13,7 @@ import {
 import { Line } from "react-chartjs-2";
 import type { ChartOptions } from "chart.js";
 import { useFinance } from "@/hooks/FinanceDataContext";
+import { useThemeColors } from "@/hooks/useThemeColors";
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Filler);
 
@@ -33,6 +34,7 @@ function getDotSize(absChange: number): { dot: number; halo: number } {
 export default function NetWorthChart() {
   const chartRef = useRef<ChartJS<"line">>(null);
   const { monthlyRecords } = useFinance();
+  const t = useThemeColors();
 
   const dataPoints: DataPoint[] = useMemo(() => {
     const sorted = [...monthlyRecords].reverse(); // oldest first
@@ -78,6 +80,23 @@ export default function NetWorthChart() {
       const ctx = chart.ctx;
       const meta = chart.getDatasetMeta(0);
 
+      const isMobile = typeof window !== "undefined" && window.innerWidth < 640;
+
+      // Indices that always get the full halo+dot+center: first, last, min, max.
+      const emphasis = new Set<number>();
+      if (dataPoints.length > 0) {
+        emphasis.add(0);
+        emphasis.add(dataPoints.length - 1);
+        let minIdx = 0;
+        let maxIdx = 0;
+        dataPoints.forEach((dp, i) => {
+          if (dp.value < dataPoints[minIdx].value) minIdx = i;
+          if (dp.value > dataPoints[maxIdx].value) maxIdx = i;
+        });
+        emphasis.add(minIdx);
+        emphasis.add(maxIdx);
+      }
+
       meta.data.forEach((point, i) => {
         const dp = dataPoints[i];
         const absChange = dp.change !== null ? Math.abs(dp.change) : 0;
@@ -85,32 +104,43 @@ export default function NetWorthChart() {
         const x = point.x;
         const y = point.y;
 
-        // Halo
-        ctx.save();
-        ctx.beginPath();
-        ctx.arc(x, y, halo, 0, Math.PI * 2);
-        ctx.fillStyle = dp.isGain ? "rgba(45, 184, 154, 0.15)" : "rgba(220, 38, 38, 0.15)";
-        ctx.fill();
-        ctx.restore();
+        // On mobile, thin the dots: only emphasized points get the full
+        // halo+dot+center, everyone else gets a small plain dot.
+        if (isMobile && !emphasis.has(i)) {
+          ctx.save();
+          ctx.beginPath();
+          ctx.arc(x, y, 2.5, 0, Math.PI * 2);
+          ctx.fillStyle = dp.isGain ? t.green : t.red;
+          ctx.fill();
+          ctx.restore();
+        } else {
+          // Halo
+          ctx.save();
+          ctx.beginPath();
+          ctx.arc(x, y, halo, 0, Math.PI * 2);
+          ctx.fillStyle = dp.isGain ? t.greenHalo : t.redHalo;
+          ctx.fill();
+          ctx.restore();
 
-        // Main dot
-        ctx.save();
-        ctx.beginPath();
-        ctx.arc(x, y, dot, 0, Math.PI * 2);
-        ctx.fillStyle = dp.isGain ? "#2DB89A" : "#DC2626";
-        ctx.fill();
-        ctx.strokeStyle = "white";
-        ctx.lineWidth = 2;
-        ctx.stroke();
-        ctx.restore();
+          // Main dot
+          ctx.save();
+          ctx.beginPath();
+          ctx.arc(x, y, dot, 0, Math.PI * 2);
+          ctx.fillStyle = dp.isGain ? t.green : t.red;
+          ctx.fill();
+          ctx.strokeStyle = t.dotStroke;
+          ctx.lineWidth = 2;
+          ctx.stroke();
+          ctx.restore();
 
-        // Center dot
-        ctx.save();
-        ctx.beginPath();
-        ctx.arc(x, y, 2, 0, Math.PI * 2);
-        ctx.fillStyle = dp.isGain ? "#1A8F78" : "#991B1B";
-        ctx.fill();
-        ctx.restore();
+          // Center dot
+          ctx.save();
+          ctx.beginPath();
+          ctx.arc(x, y, 2, 0, Math.PI * 2);
+          ctx.fillStyle = dp.isGain ? t.greenDeep : t.redDeep;
+          ctx.fill();
+          ctx.restore();
+        }
 
         // Year separator label — positioned above Dec 25 (last month of previous year)
         if (dp.isYearStart && i > 0) {
@@ -119,14 +149,14 @@ export default function NetWorthChart() {
           const prevHalo = getDotSize(prevDp.change !== null ? Math.abs(prevDp.change) : 0).halo;
           ctx.save();
           ctx.font = "600 10px 'Plus Jakarta Sans', sans-serif";
-          ctx.fillStyle = "#999";
+          ctx.fillStyle = t.axis;
           ctx.textAlign = "center";
           ctx.fillText("2026", prevPoint.x, prevPoint.y - prevHalo - 10);
           ctx.restore();
         }
       });
     },
-  }), [dataPoints]);
+  }), [dataPoints, t]);
 
   // Draw $0 reference line
   const zeroLinePlugin = useMemo(() => ({
@@ -142,20 +172,20 @@ export default function NetWorthChart() {
         ctx.beginPath();
         ctx.moveTo(xScale.left, zeroY);
         ctx.lineTo(xScale.right, zeroY);
-        ctx.strokeStyle = "#2D2D2D";
+        ctx.strokeStyle = t.zeroLine;
         ctx.lineWidth = 1.5;
         ctx.stroke();
         ctx.restore();
       }
     },
-  }), []);
+  }), [t]);
 
-  const data = {
+  const data = useMemo(() => ({
     labels,
     datasets: [
       {
         data: values,
-        borderColor: "#2DB89A",
+        borderColor: t.green,
         borderWidth: 2,
         tension: 0.3,
         pointRadius: 0,
@@ -163,9 +193,11 @@ export default function NetWorthChart() {
         fill: false,
       },
     ],
-  };
+  }), [labels, values, t]);
 
-  const options: ChartOptions<"line"> = {
+  const options: ChartOptions<"line"> = useMemo(() => {
+    const isMobile = typeof window !== "undefined" && window.innerWidth < 640;
+    return {
     responsive: true,
     maintainAspectRatio: false,
     interaction: {
@@ -174,10 +206,10 @@ export default function NetWorthChart() {
     },
     plugins: {
       tooltip: {
-        backgroundColor: "#FAF8F4",
-        titleColor: "#1a1a1a",
-        bodyColor: "#666",
-        borderColor: "#eee",
+        backgroundColor: t.tooltipBg,
+        titleColor: t.tooltipText,
+        bodyColor: t.tooltipSub,
+        borderColor: t.tooltipBorder,
         borderWidth: 1,
         cornerRadius: 8,
         padding: 12,
@@ -205,8 +237,12 @@ export default function NetWorthChart() {
             const prevVal = i > 0 ? valRef[i - 1] : null;
             let pctStr = "";
             if (prevVal !== null && prevVal !== undefined && prevVal !== 0) {
-              const pct = (ch / Math.abs(prevVal)) * 100;
-              pctStr = ` (${sign}${pct.toFixed(1)}%)`;
+              const pct = Math.round((ch / Math.abs(prevVal)) * 100);
+              if (Math.abs(pct) >= 1000) {
+                pctStr = ` (${pct < 0 ? "-" : "+"}>999%)`;
+              } else {
+                pctStr = ` (${sign}${pct}%)`;
+              }
             }
             return [`MoM: ${dollarStr}${pctStr}`];
           },
@@ -219,18 +255,22 @@ export default function NetWorthChart() {
         grid: { display: false },
         border: { display: false },
         ticks: {
-          color: "#999",
+          color: t.axis,
           font: { size: 11 },
+          autoSkip: true,
+          maxTicksLimit: isMobile ? 5 : 12,
+          maxRotation: 0,
+          minRotation: 0,
         },
       },
       y: {
         grid: {
-          color: "#E5E5E0",
+          color: t.grid,
           drawTicks: false,
         },
         border: { display: false, dash: [4, 4] },
         ticks: {
-          color: "#999",
+          color: t.axis,
           font: { size: 11 },
           callback(value) {
             const v = Number(value);
@@ -245,11 +285,12 @@ export default function NetWorthChart() {
     layout: {
       padding: { top: 30, right: 10 },
     },
-  };
+    };
+  }, [t, dpRef, valRef]);
 
   useEffect(() => {
     chartRef.current?.update();
-  }, []);
+  }, [t]);
 
   return (
     <div>
@@ -258,23 +299,23 @@ export default function NetWorthChart() {
           <h2 className="text-lg font-bold" style={{ fontFamily: "var(--font-heading)" }}>Net Worth + Gains</h2>
           <span
             className="px-3 py-1 rounded-full text-sm font-bold text-white"
-            style={{ backgroundColor: nwChange >= 0 ? "#1A8F78" : "#DC2626" }}
+            style={{ backgroundColor: nwChange >= 0 ? "var(--accent-green-deep)" : "var(--accent-red)" }}
           >
             {nwChange >= 0 ? "+" : "-"}${Math.abs(Math.round(nwChange)).toLocaleString()}
           </span>
         </div>
-        <div className="flex items-center gap-4 text-xs text-[#999]">
+        <div className="flex items-center gap-4 text-xs text-[var(--text-muted)]">
           <div className="flex items-center gap-1.5">
             <span className="relative w-5 h-5 flex items-center justify-center">
-              <span className="absolute w-4 h-4 rounded-full" style={{ backgroundColor: "rgba(45, 184, 154, 0.2)" }} />
-              <span className="relative w-2.5 h-2.5 rounded-full" style={{ backgroundColor: "#2DB89A", border: "1.5px solid white", boxShadow: "0 0 0 0.5px #2DB89A" }} />
+              <span className="absolute w-4 h-4 rounded-full" style={{ backgroundColor: "var(--accent-green-soft-bg)" }} />
+              <span className="relative w-2.5 h-2.5 rounded-full" style={{ backgroundColor: "var(--accent-green)", border: "1.5px solid var(--dot-stroke)", boxShadow: "0 0 0 0.5px var(--accent-green)" }} />
             </span>
             Gain
           </div>
           <div className="flex items-center gap-1.5">
             <span className="relative w-5 h-5 flex items-center justify-center">
-              <span className="absolute w-4 h-4 rounded-full" style={{ backgroundColor: "rgba(220, 38, 38, 0.2)" }} />
-              <span className="relative w-2.5 h-2.5 rounded-full" style={{ backgroundColor: "#DC2626", border: "1.5px solid white", boxShadow: "0 0 0 0.5px #DC2626" }} />
+              <span className="absolute w-4 h-4 rounded-full" style={{ backgroundColor: "var(--accent-red-soft-bg)" }} />
+              <span className="relative w-2.5 h-2.5 rounded-full" style={{ backgroundColor: "var(--accent-red)", border: "1.5px solid var(--dot-stroke)", boxShadow: "0 0 0 0.5px var(--accent-red)" }} />
             </span>
             Loss
           </div>

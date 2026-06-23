@@ -3,44 +3,45 @@
 import { useState, useMemo, useCallback, useEffect } from "react";
 import {
   ComposedChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  Line, AreaChart, Area, PieChart, Pie, Cell, ReferenceLine, LabelList,
+  Line, LineChart, AreaChart, Area, PieChart, Pie, Cell, ReferenceLine, LabelList,
 } from "recharts";
 import DashboardLayout from "@/components/DashboardLayout";
 import NetWorthChart from "@/components/NetWorthChart";
 import MoneyFlowChart from "@/components/MoneyFlowChart";
 import { useFinance } from "@/hooks/FinanceDataContext";
+import { useThemeColors } from "@/hooks/useThemeColors";
 import { formatCurrency, formatPercent, monthNames } from "@/data/mockData";
 
 type YearFilter = "all" | "2026" | "2025";
 
+// Compact integer dollar formatter — e.g. $2,714 → "$2.7k", -6850 → "-$6.9k"
+function fmtCompact(n: number): string {
+  const sign = n < 0 ? "-" : "";
+  const abs = Math.abs(Math.round(n));
+  if (abs >= 1000) {
+    const k = abs / 1000;
+    const s = k >= 100 ? k.toFixed(0) : k.toFixed(1).replace(/\.0$/, "");
+    return `${sign}$${s}k`;
+  }
+  return `${sign}$${abs.toLocaleString()}`;
+}
+
 export default function NetWorthPage() {
+  const c = useThemeColors();
   const {
     monthlyRecords, accounts, debts, settings,
     plnUsdRate, bynUsdRate, usdEurRate,
     setPlnUsdRate, setBynUsdRate, setUsdEurRate,
     updateDebtPaid, updateSetting,
     isLoading, error, refetch,
+    refreshExchangeRates, exchangeRatesUpdatedAt,
   } = useFinance();
 
   const [yearFilter, setYearFilter] = useState<YearFilter>("2026");
   const [areaYearFilter, setAreaYearFilter] = useState<YearFilter>("2026");
 
-  // ── Fetch exchange rates ──
-  const fetchPlnUsd = useCallback(async () => {
-    try {
-      const res = await fetch("https://api.frankfurter.app/latest?from=USD&to=PLN");
-      const data = await res.json();
-      if (data.rates?.PLN) setPlnUsdRate(parseFloat(data.rates.PLN.toFixed(4)));
-    } catch { /* keep current value */ }
-  }, [setPlnUsdRate]);
-
-  const fetchUsdEur = useCallback(async () => {
-    try {
-      const res = await fetch("https://api.frankfurter.app/latest?from=USD&to=EUR");
-      const data = await res.json();
-      if (data.rates?.EUR) setUsdEurRate(parseFloat((1 / data.rates.EUR).toFixed(4)));
-    } catch { /* keep current value */ }
-  }, [setUsdEurRate]);
+  // Exchange rates auto-refresh every 60s and on tab focus inside useFinanceData;
+  // the manual refresh buttons just trigger that same refresher.
 
   // ── Debt data from Supabase ──
   const grandmaDebt = debts.find((d) => d.currency === "USD");
@@ -88,7 +89,7 @@ export default function NetWorthPage() {
       for (let m = 0; m < 12; m++) months.push(shortMonth[m] + " 26");
     }
 
-    return months.map((name) => {
+    let rows = months.map((name) => {
       const d = dataMap.get(name);
       return {
         name,
@@ -96,7 +97,68 @@ export default function NetWorthPage() {
         expenses: d && d.expenses > 0 ? d.expenses : undefined as number | undefined,
       };
     });
+
+    // For single-year filters, trim trailing months where both series are empty.
+    if (yearFilter !== "all") {
+      let lastIdx = -1;
+      for (let i = 0; i < rows.length; i++) {
+        if (rows[i].income != null || rows[i].expenses != null) lastIdx = i;
+      }
+      rows = rows.slice(0, lastIdx + 1);
+    }
+
+    return rows;
   }, [filteredRecords, yearFilter]);
+
+  // Min/max income & expense indices for inline labelling (only extremes labelled).
+  const barExtremes = useMemo(() => {
+    let incMinI = -1, incMaxI = -1, expMinI = -1, expMaxI = -1;
+    let incMin = Infinity, incMax = -Infinity, expMin = Infinity, expMax = -Infinity;
+    barData.forEach((d, i) => {
+      if (d.income != null) {
+        if (d.income < incMin) { incMin = d.income; incMinI = i; }
+        if (d.income > incMax) { incMax = d.income; incMaxI = i; }
+      }
+      if (d.expenses != null) {
+        if (d.expenses < expMin) { expMin = d.expenses; expMinI = i; }
+        if (d.expenses > expMax) { expMax = d.expenses; expMaxI = i; }
+      }
+    });
+    return {
+      income: new Set([incMinI, incMaxI].filter((i) => i >= 0)),
+      expenses: new Set([expMinI, expMaxI].filter((i) => i >= 0)),
+    };
+  }, [barData]);
+
+  // Period totals for the Income vs Expenses header (Apple-Card style).
+  const incomeTotalPeriod = useMemo(() => barData.reduce((s, d) => s + (d.income ?? 0), 0), [barData]);
+  const expenseTotalPeriod = useMemo(() => barData.reduce((s, d) => s + (d.expenses ?? 0), 0), [barData]);
+
+  // Label density: every bar/point on wide screens, only min/max on narrow ones.
+  const [isNarrowChart, setIsNarrowChart] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 768px)");
+    const update = () => setIsNarrowChart(mq.matches);
+    update();
+    mq.addEventListener("change", update);
+    return () => mq.removeEventListener("change", update);
+  }, []);
+
+  // Income bar gradient (Apple-Card style): saturated/opaque at the BOTTOM
+  // (offset 100%), luminous + translucent glassy crest at the TOP (offset 0%).
+  const incomeStops = c.isDark
+    ? [
+        { offset: "0%", color: "#7DF0DA", opacity: 0.18 },
+        { offset: "30%", color: "#54E6C6", opacity: 0.5 },
+        { offset: "65%", color: "#3DD5B4", opacity: 0.9 },
+        { offset: "100%", color: "#2BB89D", opacity: 1 },
+      ]
+    : [
+        { offset: "0%", color: "#86DCC9", opacity: 0.3 },
+        { offset: "30%", color: "#46C9AB", opacity: 0.6 },
+        { offset: "65%", color: "#1EB594", opacity: 0.94 },
+        { offset: "100%", color: "#0E9C7C", opacity: 1 },
+      ];
 
   const filteredAreaRecords = useMemo(() => {
     if (areaYearFilter === "all") return allTimeSorted;
@@ -125,7 +187,7 @@ export default function NetWorthPage() {
       for (let m = 0; m < 12; m++) months.push(shortMonth[m] + " 26");
     }
 
-    return months.map((name) => {
+    let rows = months.map((name) => {
       const d = dataMap.get(name);
       return {
         name,
@@ -133,13 +195,80 @@ export default function NetWorthPage() {
         liabilities: d ? d.liabilities : undefined as number | undefined,
       };
     });
+
+    // Trim trailing empty future months (keep "all" intact).
+    if (areaYearFilter !== "all") {
+      let lastIdx = -1;
+      for (let i = 0; i < rows.length; i++) {
+        if (rows[i].assets != null || rows[i].liabilities != null) lastIdx = i;
+      }
+      rows = rows.slice(0, lastIdx + 1);
+    }
+
+    return rows;
   }, [filteredAreaRecords, areaYearFilter, allTimeSorted]);
+
+  // Last non-null index per series — only that point gets a label.
+  const areaLastIdx = useMemo(() => {
+    let assets = -1, liabilities = -1;
+    areaData.forEach((d, i) => {
+      if (d.assets != null) assets = i;
+      if (d.liabilities != null) liabilities = i;
+    });
+    return { assets, liabilities };
+  }, [areaData]);
 
   const current = monthlyRecords[0];
   const currentAssets = current?.isLive ? Math.round(totalAccountsUSD) : (current?.assets ?? 0);
   const currentIncome = current?.income ?? 0;
   const currentNW = current?.isLive ? Math.round(totalAccountsUSD + liveLiabilitiesUSD) : (current ? current.netWorth : 0);
   const currentMonth = current ? monthNames[current.month - 1] : "—";
+
+  // ── KPI sparklines + deltas vs. previous month ──
+  // monthlyRecords is most-recent-first; reverse for ascending order, then take last 7.
+  const sparkRecords = useMemo(() => {
+    const asc = [...monthlyRecords].reverse();
+    return asc.slice(-7);
+  }, [monthlyRecords]);
+
+  const debtSeries = sparkRecords.map((r) => Math.abs(r.liabilities));
+  const assetsSeries = sparkRecords.map((r) => r.assets);
+  const nwSeries = sparkRecords.map((r) => r.netWorth);
+  const incomeSeries = sparkRecords.map((r) => r.income);
+
+  // Previous month: skip the live (in-progress) record so we compare against a closed month.
+  const prevForKpi = monthlyRecords.find((r) => !r.isLive) ?? monthlyRecords[1];
+  const prevAssetsKpi = prevForKpi?.assets ?? 0;
+  const prevLiabilities = prevForKpi?.liabilities ?? 0;
+  const prevNW = prevForKpi?.netWorth ?? 0;
+  const prevIncome = prevForKpi?.income ?? 0;
+
+  // Debt is shown as a signed-negative number; the chip should reflect change in *amount* of debt
+  // (|curr| − |prev|), so a decrease in debt produces a negative chip with green styling.
+  const currentDebtSigned = -totalDebtUSD;
+  const debtAbsDelta = Math.abs(currentDebtSigned) - Math.abs(prevLiabilities);
+  const debtImproving = debtAbsDelta <= 0; // debt went down (or unchanged)
+
+  const assetsDelta = currentAssets - prevAssetsKpi;
+  const assetsImproving = assetsDelta >= 0;
+
+  const nwDelta = currentNW - prevNW;
+  const nwImproving = nwDelta >= 0;
+
+  const incomeDelta = currentIncome - prevIncome;
+  const incomeImproving = incomeDelta >= 0;
+
+  // Income tone: warn (gold) if below 90% of last month, otherwise income (green).
+  const incomeTone: "income" | "warn" =
+    prevIncome > 0 && currentIncome < 0.9 * prevIncome ? "warn" : "income";
+
+  const fmtDelta = (n: number) => {
+    const r = Math.round(n);
+    if (r === 0) return "$0";
+    return (r > 0 ? "+" : "−") + "$" + Math.abs(r).toLocaleString();
+  };
+
+  const hasPrev = !!prevForKpi;
 
   // Goal — compute from net worth
   const goalTarget = 10000;
@@ -152,16 +281,18 @@ export default function NetWorthPage() {
     : 0;
   const estimatedMonths = avgMonthlyGain > 0 ? Math.ceil(goalRemaining / avgMonthlyGain) : null;
 
-  // Asset allocation from current_accounts (already computed above)
-  const assetAllocation = totalAccountsUSD > 0 ? [
-    { name: "PLN Holdings", value: Math.round((plnTotal / plnUsdRate / totalAccountsUSD) * 100), color: "#1A8F78" },
-    { name: "EUR Holdings", value: Math.round((eurTotal * usdEurRate / totalAccountsUSD) * 100), color: "#7DD8C4" },
-    { name: "USD Holdings", value: Math.round((usdTotal / totalAccountsUSD) * 100), color: "#C4A84D" },
+  // Asset allocation from current_accounts (already computed above).
+  // Colors baked from theme tokens so the pie + swatches recolor on theme toggle.
+  const allocColors = useMemo(() => [c.greenDeep, c.greenSoft, c.gold], [c]);
+  const assetAllocation = useMemo(() => (totalAccountsUSD > 0 ? [
+    { name: "PLN Holdings", value: Math.round((plnTotal / plnUsdRate / totalAccountsUSD) * 100), color: allocColors[0] },
+    { name: "EUR Holdings", value: Math.round((eurTotal * usdEurRate / totalAccountsUSD) * 100), color: allocColors[1] },
+    { name: "USD Holdings", value: Math.round((usdTotal / totalAccountsUSD) * 100), color: allocColors[2] },
   ] : [
-    { name: "PLN Holdings", value: 73, color: "#1A8F78" },
-    { name: "EUR Holdings", value: 22, color: "#7DD8C4" },
-    { name: "USD Holdings", value: 5, color: "#C4A84D" },
-  ];
+    { name: "PLN Holdings", value: 73, color: allocColors[0] },
+    { name: "EUR Holdings", value: 22, color: allocColors[1] },
+    { name: "USD Holdings", value: 5, color: allocColors[2] },
+  ]), [totalAccountsUSD, plnTotal, plnUsdRate, eurTotal, usdEurRate, usdTotal, allocColors]);
 
   // Month change — current live accounts vs previous month's assets from DB
   const prevMonth = monthlyRecords.find((r) => !r.isLive) ?? monthlyRecords[1];
@@ -183,7 +314,7 @@ export default function NetWorthPage() {
   const yearLabels: Record<YearFilter, string> = { all: "All Time", "2026": "2026", "2025": "2025" };
 
   const maxChange = Math.max(...monthChangeBreakdown.map((b) => b.usdValue), 1);
-  const changeBarColors = ["#1A8F78", "#7DD8C4", "#C4A84D"];
+  const changeBarColors = allocColors;
 
   // Build debt cards data
   const debtCards = [
@@ -220,8 +351,8 @@ export default function NetWorthPage() {
         <div className="max-w-[1400px] mx-auto">
           <div className="flex items-center justify-center h-[60vh]">
             <div className="flex flex-col items-center gap-3">
-              <div className="w-8 h-8 border-2 border-[#2DB89A] border-t-transparent rounded-full animate-spin" />
-              <span className="text-sm text-[#999]">Loading financial data...</span>
+              <div className="w-8 h-8 border-2 border-[var(--accent-green)] border-t-transparent rounded-full animate-spin" />
+              <span className="text-sm text-[var(--text-muted)]">Loading financial data...</span>
             </div>
           </div>
         </div>
@@ -235,14 +366,14 @@ export default function NetWorthPage() {
         <div className="max-w-[1400px] mx-auto">
           <div className="flex items-center justify-center h-[60vh]">
             <div className="flex flex-col items-center gap-3 text-center">
-              <div className="w-12 h-12 rounded-full bg-[#FEF2F2] flex items-center justify-center">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#DC2626" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <div className="w-12 h-12 rounded-full bg-[var(--accent-red-soft-bg)] flex items-center justify-center">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--accent-red)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <circle cx="12" cy="12" r="10" /><line x1="15" y1="9" x2="9" y2="15" /><line x1="9" y1="9" x2="15" y2="15" />
                 </svg>
               </div>
-              <p className="text-sm text-[#DC2626] font-medium">Failed to load data</p>
-              <p className="text-xs text-[#999] max-w-[300px]">{error}</p>
-              <button onClick={refetch} className="mt-2 px-4 py-2 bg-[#1a1a1a] text-white rounded-xl text-sm font-medium hover:bg-[#333] transition-colors">
+              <p className="text-sm text-[var(--accent-red)] font-medium">Failed to load data</p>
+              <p className="text-xs text-[var(--text-muted)] max-w-[300px]">{error}</p>
+              <button onClick={refetch} className="mt-2 px-4 py-2 bg-[var(--text)] text-[var(--bg)] rounded-xl text-sm font-medium hover:opacity-90 transition-opacity">
                 Retry
               </button>
             </div>
@@ -257,7 +388,7 @@ export default function NetWorthPage() {
       <DashboardLayout>
         <div className="max-w-[1400px] mx-auto">
           <div className="flex items-center justify-center h-[60vh]">
-            <p className="text-sm text-[#999]">No data found. Add records to get started.</p>
+            <p className="text-sm text-[var(--text-muted)]">No data found. Add records to get started.</p>
           </div>
         </div>
       </DashboardLayout>
@@ -269,10 +400,38 @@ export default function NetWorthPage() {
       <div className="max-w-[1400px] mx-auto">
         {/* ── KPI Cards + Exchange Rates ── */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-5">
-          <KPICard label="Debt" value={formatCurrency(-totalDebtUSD)} color="#DC2626" />
-          <KPICard label="Assets" value={formatCurrency(currentAssets)} color="#0D9B7A" />
-          <KPICard label="Net Worth" value={formatCurrency(currentNW)} color={currentNW >= 0 ? "#0D9B7A" : "#DC2626"} />
-          <KPICard label={`Income (${currentMonth})`} value={formatCurrency(currentIncome)} color="#0D9B7A" />
+          <KPICard
+            label="Debt"
+            value={formatCurrency(-totalDebtUSD)}
+            tone="negative"
+            series={debtSeries}
+            deltaLabel={hasPrev ? fmtDelta(debtAbsDelta) : undefined}
+            deltaImproving={debtImproving}
+          />
+          <KPICard
+            label="Assets"
+            value={formatCurrency(currentAssets)}
+            tone="positive"
+            series={assetsSeries}
+            deltaLabel={hasPrev ? fmtDelta(assetsDelta) : undefined}
+            deltaImproving={assetsImproving}
+          />
+          <KPICard
+            label="Net Worth"
+            value={formatCurrency(currentNW)}
+            tone={currentNW >= 0 ? "positive" : "negative"}
+            series={nwSeries}
+            deltaLabel={hasPrev ? fmtDelta(nwDelta) : undefined}
+            deltaImproving={nwImproving}
+          />
+          <KPICard
+            label={`Income (${currentMonth})`}
+            value={formatCurrency(currentIncome)}
+            tone={incomeTone}
+            series={incomeSeries}
+            deltaLabel={hasPrev ? fmtDelta(incomeDelta) : undefined}
+            deltaImproving={incomeImproving}
+          />
         </div>
 
         {/* ── Two-column layout: Left charts + Right sidebar ── */}
@@ -286,23 +445,22 @@ export default function NetWorthPage() {
                 {debtCards.map((debt) => {
                   const progress = (debt.paid / debt.totalOwed) * 100;
                   return (
-                    <div key={debt.name} className="bg-white rounded-2xl p-5 shadow-[0_1px_3px_rgba(0,0,0,0.04)]">
+                    <div key={debt.name} className="glass-card rounded-2xl p-5">
                       <div className="flex items-center justify-between mb-3">
                         <h3 className="font-semibold text-sm" style={{ fontFamily: "var(--font-heading)" }}>{debt.name}</h3>
-                        <span className={`text-xs px-2 py-0.5 rounded-full ${debt.apr === 0 ? "bg-[#E6F7F3] text-[#0D9B7A]" : "bg-[#FEF2F2] text-[#DC2626]"}`}>{debt.apr}% APR</span>
+                        <span className={`text-xs px-2 py-0.5 rounded-full ${debt.apr === 0 ? "bg-[var(--accent-green-soft-bg)] text-[var(--accent-green-strong)]" : "bg-[var(--accent-red-soft-bg)] text-[var(--accent-red-strong)]"}`}>{debt.apr}% APR</span>
                       </div>
                       <div className="space-y-1.5 text-sm">
                         <div className="flex justify-between">
-                          <span className="text-[#999]">Total</span>
+                          <span className="text-[var(--text-muted)]">Total</span>
                           <div className="text-right">
-                            <span className="font-medium">{debt.symbol}{debt.totalOwed.toLocaleString()}</span>
-                            {"isForeign" in debt && debt.isForeign && <span className="text-[11px] text-[#aaa] ml-1">(${Math.round(debt.totalOwed / debt.fxRate).toLocaleString()})</span>}
+                            <span className="font-medium text-[var(--text)]">{debt.symbol}{debt.totalOwed.toLocaleString()}</span>
                           </div>
                         </div>
                         <div className="flex justify-between items-center">
-                          <span className="text-[#999]">Paid</span>
+                          <span className="text-[var(--text-muted)]">Paid</span>
                           <div className="flex items-center">
-                            <span className="text-[#0D9B7A] font-medium mr-0.5">{debt.symbol.trim()}</span>
+                            <span className="text-[var(--accent-green-strong)] font-medium mr-0.5">{debt.symbol.trim()}</span>
                             <input
                               type="number"
                               value={debt.paid}
@@ -310,51 +468,43 @@ export default function NetWorthPage() {
                                 const val = e.target.value === "" ? 0 : Number(e.target.value);
                                 handleDebtPaidChange(debt.id, val);
                               }}
-                              className="w-20 text-right font-medium text-[#0D9B7A] bg-[#EFF6FF] rounded px-1 border-none outline-none text-sm focus:bg-[#DBEAFE] transition-colors"
+                              className="w-20 text-right font-medium text-[var(--accent-green-strong)] bg-[var(--input-num-bg)] rounded px-1 border-none outline-none text-sm focus:bg-[var(--input-num-focus)] transition-colors"
                               step="0.01"
                             />
-                            {"isForeign" in debt && debt.isForeign && <span className="text-[11px] text-[#aaa] ml-1">(${Math.round(debt.paid / debt.fxRate).toLocaleString()})</span>}
                           </div>
                         </div>
                         <div className="flex justify-between">
-                          <span className="text-[#999]">Remaining</span>
+                          <span className="text-[var(--text-muted)]">Remaining</span>
                           <div className="text-right">
-                            <span className="font-medium text-[#DC2626]">{debt.symbol}{debt.remaining.toLocaleString()}</span>
-                            {"isForeign" in debt && debt.isForeign && <span className="text-[11px] text-[#aaa] ml-1">(${Math.round(debt.remaining / debt.fxRate).toLocaleString()})</span>}
+                            <span className="font-medium text-[var(--accent-red-strong)]">{debt.symbol}{debt.remaining.toLocaleString()}</span>
                           </div>
                         </div>
                       </div>
                       <div className="mt-3">
-                        <div className="w-full h-2 bg-[#F5F3EF] rounded-full overflow-hidden">
-                          <div className="h-full rounded-full transition-all" style={{ width: `${progress}%`, backgroundColor: progress < 30 ? "#DC2626" : progress < 80 ? "#C4A84D" : "#2DB89A" }} />
+                        <div className="w-full h-2 bg-[var(--chip)] rounded-full overflow-hidden">
+                          <div className="h-full rounded-full transition-all" style={{ width: `${progress}%`, backgroundColor: progress < 30 ? "var(--accent-red)" : progress < 80 ? "var(--accent-gold)" : "var(--accent-green)" }} />
                         </div>
-                        <span className="text-[10px] text-[#999] mt-1 block">{formatPercent(progress)}</span>
+                        <span className="text-[10px] text-[var(--text-muted)] mt-1 block">{formatPercent(progress)}</span>
                       </div>
                     </div>
                   );
                 })}
-                <div className="bg-white rounded-2xl p-5 shadow-[0_1px_3px_rgba(0,0,0,0.04)]">
-                  <h3 className="font-semibold text-sm mb-3" style={{ fontFamily: "var(--font-heading)" }}>Total Debt (USD)</h3>
-                  <p className="text-2xl font-bold text-[#DC2626]" style={{ fontFamily: "var(--font-heading)" }}>
-                    ${totalDebtUSD.toLocaleString()}
-                  </p>
-                </div>
               </div>
             </div>
 
             {/* Assets vs Liabilities */}
-            <div className="bg-white rounded-2xl p-6 shadow-[0_1px_3px_rgba(0,0,0,0.04)]">
-              <div className="flex items-center justify-between mb-6">
-                <h2 className="text-lg font-bold" style={{ fontFamily: "var(--font-heading)" }}>Assets vs Liabilities</h2>
-                <div className="flex gap-1 bg-[#F5F3EF] rounded-xl p-1">
+            <div className="glass-card rounded-2xl p-4 md:p-6">
+              <div className="flex items-center justify-between mb-4 md:mb-6 gap-2 flex-wrap">
+                <h2 className="text-base md:text-lg font-bold" style={{ fontFamily: "var(--font-heading)" }}>Assets vs Liabilities</h2>
+                <div className="flex gap-1 bg-[var(--chip)] rounded-xl p-1">
                   {years.map((y) => (
                     <button
                       key={`area-${y}`}
                       onClick={() => setAreaYearFilter(y)}
                       className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-all ${
                         areaYearFilter === y
-                          ? "bg-[#1a1a1a] text-white shadow-sm"
-                          : "text-[#888] hover:text-[#555]"
+                          ? "bg-[var(--text)] text-[var(--bg)] shadow-sm"
+                          : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
                       }`}
                     >
                       {yearLabels[y]}
@@ -363,53 +513,55 @@ export default function NetWorthPage() {
                 </div>
               </div>
               <ResponsiveContainer width="100%" height={300}>
-                <AreaChart data={areaData}>
+                <AreaChart data={areaData} margin={{ top: 16, right: 12, bottom: 0, left: -8 }}>
                   <defs>
                     <linearGradient id="gradAssets" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#B3ECE0" stopOpacity={0.5} />
-                      <stop offset="100%" stopColor="#B3ECE0" stopOpacity={0.05} />
+                      <stop offset="0%" stopColor={c.greenPale} stopOpacity={0.5} />
+                      <stop offset="100%" stopColor={c.greenPale} stopOpacity={0.05} />
                     </linearGradient>
                     <linearGradient id="gradLiabilities" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#FECACA" stopOpacity={0.05} />
-                      <stop offset="100%" stopColor="#FECACA" stopOpacity={0.5} />
+                      <stop offset="0%" stopColor={c.redPale} stopOpacity={0.05} />
+                      <stop offset="100%" stopColor={c.redPale} stopOpacity={0.5} />
                     </linearGradient>
                   </defs>
-                  <CartesianGrid strokeDasharray="4 4" stroke="#E5E5E0" vertical={false} />
-                  <XAxis dataKey="name" tick={{ fill: "#999", fontSize: 11 }} axisLine={false} tickLine={false} />
-                  <YAxis tick={{ fill: "#999", fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} />
-                  <ReferenceLine y={0} stroke="#2D2D2D" strokeWidth={1.5} />
+                  <CartesianGrid strokeDasharray="4 4" stroke={c.grid} vertical={false} />
+                  <XAxis dataKey="name" tick={{ fill: c.axis, fontSize: 11 }} axisLine={false} tickLine={false} interval="preserveStartEnd" minTickGap={24} />
+                  <YAxis width={40} tickCount={4} tick={{ fill: c.axis, fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} domain={[(dataMin: number) => Math.floor((dataMin * 1.1) / 1000) * 1000, (dataMax: number) => Math.ceil((dataMax * 1.15) / 1000) * 1000]} />
+                  <ReferenceLine y={0} stroke={c.baseline} strokeWidth={1.5} />
                   <Tooltip
-                    contentStyle={{ borderRadius: 12, border: "none", boxShadow: "0 4px 12px rgba(0,0,0,0.08)", backgroundColor: "#FAF8F4" }}
+                    contentStyle={{ borderRadius: 12, border: "none", boxShadow: "0 4px 12px rgba(0,0,0,0.08)", backgroundColor: c.tooltipBg, color: c.tooltipText }}
                     // eslint-disable-next-line @typescript-eslint/no-explicit-any
                     formatter={(value: any, name: any) => [`$${Number(value).toLocaleString()}`, name === "assets" ? "Assets" : "Liabilities"]}
                   />
                   <Area
                     type="monotone"
                     dataKey="assets"
-                    stroke="#2DB89A"
+                    stroke={c.green}
                     fill="url(#gradAssets)"
                     strokeWidth={2}
-                    dot={{ r: 4, fill: "#2DB89A", stroke: "white", strokeWidth: 2 }}
+                    dot={{ r: 4, fill: c.green, stroke: c.dotStroke, strokeWidth: 2 }}
                     connectNulls={false}
+                    isAnimationActive={false}
                     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                    label={({ x, y, value }: any) => value != null ? (
-                      <text x={x} y={y - 12} textAnchor="middle" fill="#2DB89A" fontSize={10} fontWeight={600}>
-                        ${Number(value).toLocaleString()}
+                    label={({ x, y, index, value }: any) => index === areaLastIdx.assets && value != null ? (
+                      <text x={x} y={y - 12} textAnchor="middle" fill={c.green} fontSize={11} fontWeight={600}>
+                        {fmtCompact(Number(value))}
                       </text>
                     ) : null}
                   />
                   <Area
                     type="monotone"
                     dataKey="liabilities"
-                    stroke="#DC2626"
+                    stroke={c.red}
                     fill="url(#gradLiabilities)"
                     strokeWidth={2}
-                    dot={{ r: 4, fill: "#DC2626", stroke: "white", strokeWidth: 2 }}
+                    dot={{ r: 4, fill: c.red, stroke: c.dotStroke, strokeWidth: 2 }}
                     connectNulls={false}
+                    isAnimationActive={false}
                     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                    label={({ x, y, value }: any) => value != null ? (
-                      <text x={x} y={y + 18} textAnchor="middle" fill="#DC2626" fontSize={10} fontWeight={600}>
-                        ${Number(value).toLocaleString()}
+                    label={({ x, y, index, value }: any) => index === areaLastIdx.liabilities && value != null ? (
+                      <text x={x} y={y + 18} textAnchor="middle" fill={c.red} fontSize={11} fontWeight={600}>
+                        {fmtCompact(Number(value))}
                       </text>
                     ) : null}
                   />
@@ -418,18 +570,18 @@ export default function NetWorthPage() {
             </div>
 
             {/* Income vs Expenses */}
-            <div className="bg-white rounded-2xl p-6 shadow-[0_1px_3px_rgba(0,0,0,0.04)]">
-              <div className="flex items-center justify-between mb-6">
-                <h2 className="text-lg font-bold" style={{ fontFamily: "var(--font-heading)" }}>Income vs Expenses</h2>
-                <div className="flex gap-1 bg-[#F5F3EF] rounded-xl p-1">
+            <div className="glass-card rounded-2xl p-4 md:p-6">
+              <div className="flex items-center justify-between mb-4 md:mb-6 gap-2 flex-wrap">
+                <h2 className="text-base md:text-lg font-bold" style={{ fontFamily: "var(--font-heading)" }}>Income vs Expenses</h2>
+                <div className="flex gap-1 bg-[var(--chip)] rounded-xl p-1">
                   {years.map((y) => (
                     <button
                       key={y}
                       onClick={() => setYearFilter(y)}
                       className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-all ${
                         yearFilter === y
-                          ? "bg-[#1a1a1a] text-white shadow-sm"
-                          : "text-[#888] hover:text-[#555]"
+                          ? "bg-[var(--text)] text-[var(--bg)] shadow-sm"
+                          : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
                       }`}
                     >
                       {yearLabels[y]}
@@ -437,56 +589,83 @@ export default function NetWorthPage() {
                   ))}
                 </div>
               </div>
+              {/* Period totals (Apple-Card style headline) */}
+              <div className="flex items-stretch gap-3 mb-5">
+                <div className="flex-1">
+                  <p className="text-[11px] uppercase tracking-wider text-[var(--text-muted)] mb-1">Total Earned</p>
+                  <p className="text-xl md:text-2xl font-bold tabular-nums text-[var(--accent-green-strong)]" style={{ fontFamily: "var(--font-heading)" }}>
+                    ${Math.round(incomeTotalPeriod).toLocaleString()}
+                  </p>
+                </div>
+                <div className="w-px self-stretch bg-[var(--hairline)]" />
+                <div className="flex-1">
+                  <p className="text-[11px] uppercase tracking-wider text-[var(--text-muted)] mb-1">Total Spent</p>
+                  <p className="text-xl md:text-2xl font-bold tabular-nums text-[var(--accent-red-strong)]" style={{ fontFamily: "var(--font-heading)" }}>
+                    ${Math.round(expenseTotalPeriod).toLocaleString()}
+                  </p>
+                </div>
+              </div>
               <ResponsiveContainer width="100%" height={280}>
-                <ComposedChart data={barData} barGap={0} barCategoryGap="30%">
-                  <CartesianGrid strokeDasharray="4 4" stroke="#E5E5E0" vertical={false} />
-                  <XAxis dataKey="name" tick={{ fill: "#999", fontSize: 11 }} axisLine={false} tickLine={false} />
-                  <YAxis tick={{ fill: "#999", fontSize: 12 }} axisLine={false} tickLine={false} tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} />
+                <ComposedChart data={barData} barGap={0} barCategoryGap="18%" margin={{ top: 16, right: 12, bottom: 0, left: -8 }}>
+                  <defs>
+                    <linearGradient id="incomeBar" x1="0" y1="0" x2="0" y2="1">
+                      {incomeStops.map((s) => (
+                        <stop key={s.offset} offset={s.offset} stopColor={s.color} stopOpacity={s.opacity} />
+                      ))}
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="4 4" stroke={c.grid} vertical={false} />
+                  <XAxis dataKey="name" tick={{ fill: c.axis, fontSize: 11 }} axisLine={false} tickLine={false} interval="preserveStartEnd" minTickGap={20} />
+                  <YAxis tick={{ fill: c.axis, fontSize: 12 }} axisLine={false} tickLine={false} tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} />
                   <Tooltip
-                    contentStyle={{ borderRadius: 12, border: "none", boxShadow: "0 4px 12px rgba(0,0,0,0.08)", fontFamily: "var(--font-body)", backgroundColor: "#FAF8F4" }}
+                    contentStyle={{ borderRadius: 12, border: "none", boxShadow: "0 4px 12px rgba(0,0,0,0.08)", fontFamily: "var(--font-body)", backgroundColor: c.tooltipBg, color: c.tooltipText }}
                     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                    formatter={(value: any, name: any) => [`$${Number(value).toLocaleString()}`, name === "income" ? "Income" : "Expenses"]}
+                    formatter={(value: any, name: any) => [`$${Math.round(Number(value)).toLocaleString()}`, name === "income" ? "Income" : "Expenses"]}
                   />
-                  <Bar dataKey="income" fill="#2DB89A" radius={[6, 6, 0, 0]} name="income">
-                    {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+                  <Bar dataKey="income" fill="url(#incomeBar)" radius={[6, 6, 0, 0]} name="income" isAnimationActive={false}>
                     {barData.map((entry, index) => (
-                      <Cell key={index} fill={entry.income != null ? "#2DB89A" : "transparent"} />
+                      <Cell key={index} fill={entry.income != null ? "url(#incomeBar)" : "transparent"} />
                     ))}
                     <LabelList
                       dataKey="income"
                       position="top"
                       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                      formatter={(v: any) => v != null ? `$${Number(v).toLocaleString()}` : ""}
-                      fill="#1A8F78"
-                      fontSize={10}
-                      fontWeight={600}
-                      offset={6}
+                      content={(props: any) => {
+                        const { x, y, width, value, index } = props;
+                        if (value == null || (isNarrowChart && !barExtremes.income.has(index))) return null;
+                        return (
+                          <text x={x + width / 2} y={y - 7} textAnchor="middle" fill={c.incomeLabel} fontSize={11} fontWeight={600}>
+                            {fmtCompact(Number(value))}
+                          </text>
+                        );
+                      }}
                     />
                   </Bar>
                   <Line
                     type="monotone"
                     dataKey="expenses"
-                    stroke="#DC2626"
-                    strokeWidth={2}
-                    dot={{ r: 5, fill: "#DC2626", stroke: "white", strokeWidth: 2 }}
+                    stroke={c.expense}
+                    strokeWidth={2.5}
+                    dot={{ r: 4.5, fill: c.expense, stroke: c.dotStroke, strokeWidth: 2 }}
                     connectNulls={false}
                     name="expenses"
+                    isAnimationActive={false}
                     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                    label={({ x, y, value }: any) => value != null ? (
-                      <text x={x} y={y - 10} textAnchor="middle" fill="#DC2626" fontSize={10} fontWeight={600}>
-                        ${Number(value).toLocaleString()}
+                    label={({ x, y, index, value }: any) => value != null && (!isNarrowChart || barExtremes.expenses.has(index)) ? (
+                      <text x={x} y={y - 13} textAnchor="middle" fill={c.expenseLabel} fontSize={11} fontWeight={600}>
+                        {fmtCompact(Number(value))}
                       </text>
                     ) : null}
                   />
                 </ComposedChart>
               </ResponsiveContainer>
               <div className="flex gap-6 mt-4">
-                <div className="flex items-center gap-2 text-sm text-[#888]">
-                  <span className="w-3 h-3 rounded-sm" style={{ backgroundColor: "#2DB89A" }} />
+                <div className="flex items-center gap-2 text-sm text-[var(--text-muted)]">
+                  <span className="w-3 h-3 rounded-sm" style={{ backgroundColor: c.income }} />
                   Income
                 </div>
-                <div className="flex items-center gap-2 text-sm text-[#888]">
-                  <span className="w-3 h-3 rounded-full" style={{ backgroundColor: "#DC2626" }} />
+                <div className="flex items-center gap-2 text-sm text-[var(--text-muted)]">
+                  <span className="w-3 h-3 rounded-full" style={{ backgroundColor: c.expense }} />
                   Expenses
                 </div>
               </div>
@@ -496,12 +675,12 @@ export default function NetWorthPage() {
             <MoneyFlowChart />
 
             {/* Net Worth + Gains */}
-            <div className="bg-white rounded-2xl p-6 shadow-[0_1px_3px_rgba(0,0,0,0.04)]">
+            <div className="glass-card rounded-2xl p-4 md:p-6">
               <NetWorthChart />
             </div>
 
             {/* Yearly Performance (3D Isometric) */}
-            <div className="bg-white rounded-2xl p-6 shadow-[0_1px_3px_rgba(0,0,0,0.04)]">
+            <div className="glass-card rounded-2xl p-4 md:p-6">
               <h2 className="text-lg font-bold mb-6" style={{ fontFamily: "var(--font-heading)" }}>Yearly Performance</h2>
               <YearlyPerformance3D records={monthlyRecords} />
             </div>
@@ -510,38 +689,38 @@ export default function NetWorthPage() {
           {/* ── RIGHT COLUMN (sticky sidebar) ── */}
           <div className="flex flex-col gap-4 lg:sticky lg:top-6">
             {/* Goal Card */}
-            <div className="rounded-2xl p-5 shadow-[0_1px_3px_rgba(0,0,0,0.04)] relative" style={{ backgroundColor: "#EFE0A0" }}>
-              <div className="absolute top-4 right-4 w-11 h-11 rounded-full flex items-center justify-center text-[11px] font-bold text-white" style={{ backgroundColor: "#DC2626" }}>
+            <div className="glass-tinted glass-tinted--gold rounded-2xl p-5 relative">
+              <div className="absolute top-4 right-4 w-11 h-11 rounded-full flex items-center justify-center text-[11px] font-bold text-white" style={{ backgroundColor: "var(--accent-red)" }}>
                 {Math.abs(goalPercent).toFixed(0)}%
               </div>
               <div className="flex items-center gap-2 mb-2">
-                <span className="text-[#B8962A]">
+                <span className="text-[var(--accent-gold-deep)]">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><circle cx="12" cy="12" r="6" /><circle cx="12" cy="12" r="2" /></svg>
                 </span>
-                <h3 className="text-sm font-bold" style={{ fontFamily: "var(--font-heading)", color: "#8B7332" }}>
+                <h3 className="text-sm font-bold" style={{ fontFamily: "var(--font-heading)", color: "var(--accent-gold-deep)" }}>
                   Goal: $10,000
                 </h3>
               </div>
-              <p className="text-3xl font-bold mt-1" style={{ fontFamily: "var(--font-heading)", color: "#2D2D2D" }}>
+              <p className="text-3xl font-bold mt-1 text-[var(--text)]" style={{ fontFamily: "var(--font-heading)" }}>
                 {formatCurrency(goalCurrent)}
               </p>
-              <div className="w-full h-3 bg-[#E0D5B0] rounded-full mt-4 overflow-hidden">
+              <div className="w-full h-3 bg-[var(--gold-track)] rounded-full mt-4 overflow-hidden">
                 <div
-                  className="h-full rounded-full transition-all"
-                  style={{ width: `${Math.max(0, goalPercent)}%`, backgroundColor: "#1a1a1a" }}
+                  className="h-full rounded-full transition-all bg-[var(--text)]"
+                  style={{ width: `${Math.max(0, goalPercent)}%` }}
                 />
               </div>
-              <div className="flex justify-between mt-2 text-xs" style={{ color: "#8B7332" }}>
+              <div className="flex justify-between mt-2 text-xs" style={{ color: "var(--accent-gold-deep)" }}>
                 <span>${goalRemaining.toLocaleString()} remaining</span>
                 {estimatedMonths && <span>~{estimatedMonths} months at current pace</span>}
               </div>
             </div>
 
             {/* Asset Allocation + Month Change */}
-            <div className="rounded-2xl p-5 shadow-[0_1px_3px_rgba(0,0,0,0.04)]" style={{ backgroundColor: "#E6F7F3" }}>
+            <div className="glass-tinted rounded-2xl p-5">
               <div className="flex items-center justify-between mb-3">
-                <h3 className="text-sm font-bold" style={{ fontFamily: "var(--font-heading)" }}>Asset Allocation</h3>
-                <span className="px-3 py-1 rounded-full text-sm font-bold text-white" style={{ backgroundColor: "#1A8F78" }}>
+                <h3 className="text-sm font-bold text-[var(--text)]" style={{ fontFamily: "var(--font-heading)" }}>Asset Allocation</h3>
+                <span className="px-3 py-1 rounded-full text-sm font-bold text-white" style={{ backgroundColor: "var(--accent-green-deep)" }}>
                   ${Math.round(monthChangeTotal).toLocaleString()}
                 </span>
               </div>
@@ -566,8 +745,8 @@ export default function NetWorthPage() {
                     </PieChart>
                   </ResponsiveContainer>
                   <div className="absolute inset-0 flex items-center justify-center flex-col">
-                    <span className="text-[8px] text-[#999]">Total</span>
-                    <span className="text-sm font-bold" style={{ fontFamily: "var(--font-heading)" }}>${Math.round(totalAccountsUSD).toLocaleString()}</span>
+                    <span className="text-[8px] text-[var(--text-muted)]">Total</span>
+                    <span className="text-sm font-bold text-[var(--text)]" style={{ fontFamily: "var(--font-heading)" }}>${Math.round(totalAccountsUSD).toLocaleString()}</span>
                   </div>
                 </div>
                 <div className="flex flex-col gap-3 flex-1">
@@ -575,18 +754,18 @@ export default function NetWorthPage() {
                     <div key={a.name}>
                       <div className="flex items-center gap-1.5 mb-0.5">
                         <span className="w-2 h-2 rounded-full" style={{ backgroundColor: a.color }} />
-                        <span className="text-[11px] text-[#999]">{a.name.replace(" Holdings", "")}</span>
+                        <span className="text-[11px] text-[var(--text-muted)]">{a.name.replace(" Holdings", "")}</span>
                       </div>
-                      <span className="text-lg font-bold" style={{ fontFamily: "var(--font-heading)" }}>{a.value}%</span>
+                      <span className="text-lg font-bold text-[var(--text)]" style={{ fontFamily: "var(--font-heading)" }}>{a.value}%</span>
                     </div>
                   ))}
                 </div>
               </div>
 
               {/* Month Change breakdown */}
-              <div className="mt-4 pt-4" style={{ borderTop: "1px solid rgba(45,184,154,0.2)" }}>
+              <div className="mt-4 pt-4" style={{ borderTop: "1px solid var(--hairline)" }}>
                 <div className="flex items-end gap-2 h-[60px] relative mt-1">
-                  <div className="absolute bottom-[30px] left-0 right-0 border-t border-dashed" style={{ borderColor: "rgba(45,184,154,0.3)" }} />
+                  <div className="absolute bottom-[30px] left-0 right-0 border-t border-dashed" style={{ borderColor: "var(--border)" }} />
                   {monthChangeBreakdown.map((b, i) => {
                     const h = maxChange > 0 ? (b.usdValue / maxChange) * 50 : 0;
                     return (
@@ -601,9 +780,9 @@ export default function NetWorthPage() {
                     <div key={b.currency} className="flex flex-col items-center text-center flex-1">
                       <div className="flex items-center gap-1 mb-0.5">
                         <span className="w-2 h-2 rounded-full" style={{ backgroundColor: changeBarColors[i] }} />
-                        <span className="text-[10px] text-[#1A8F78]">{b.currency}</span>
+                        <span className="text-[10px] text-[var(--accent-green-deep)]">{b.currency}</span>
                       </div>
-                      <span className="text-xs font-semibold text-[#0D9B7A]">
+                      <span className="text-xs font-semibold text-[var(--accent-green-strong)]">
                         {b.prefix}{b.symbol}{b.amount.toLocaleString()}
                       </span>
                     </div>
@@ -613,11 +792,31 @@ export default function NetWorthPage() {
             </div>
 
             {/* Exchange Rates */}
-            <div className="bg-white rounded-2xl p-4 shadow-[0_1px_3px_rgba(0,0,0,0.04)]">
+            <div className="glass-card rounded-2xl p-4">
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-1.5">
+                  <span className="relative flex h-1.5 w-1.5">
+                    <span className="absolute inline-flex h-full w-full rounded-full bg-[var(--accent-green)] opacity-60 animate-ping" />
+                    <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-[var(--accent-green)]" />
+                  </span>
+                  <span className="text-[10px] uppercase tracking-wider text-[var(--text-muted)]">Live FX</span>
+                </div>
+                <button
+                  onClick={() => { refreshExchangeRates(); }}
+                  className="text-[10px] text-[var(--text-faint)] hover:text-[var(--text-muted)] transition-colors"
+                  title={exchangeRatesUpdatedAt
+                    ? `Last synced ${new Date(exchangeRatesUpdatedAt).toLocaleTimeString()}`
+                    : "Refresh rates"}
+                >
+                  {exchangeRatesUpdatedAt
+                    ? new Date(exchangeRatesUpdatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+                    : "—"}
+                </button>
+              </div>
               <div className="flex flex-col gap-1">
-                <ExchangeRateRow label="PLN/USD" value={plnUsdRate} onChange={setPlnUsdRate} suffix=" zł" onRefresh={fetchPlnUsd} />
-                <ExchangeRateRow label="BYN/USD" value={bynUsdRate} onChange={handleBynRateChange} prefix="BYN " />
-                <ExchangeRateRow label="USD/EUR" value={usdEurRate} onChange={setUsdEurRate} prefix="$" onRefresh={fetchUsdEur} />
+                <ExchangeRateRow label="PLN/USD" value={plnUsdRate} onChange={setPlnUsdRate} suffix=" zł" onRefresh={refreshExchangeRates} />
+                <ExchangeRateRow label="BYN/USD" value={bynUsdRate} onChange={handleBynRateChange} prefix="BYN " onRefresh={refreshExchangeRates} />
+                <ExchangeRateRow label="USD/EUR" value={usdEurRate} onChange={setUsdEurRate} prefix="$" onRefresh={refreshExchangeRates} />
               </div>
             </div>
           </div>
@@ -648,7 +847,7 @@ function ExchangeRateRow({
 
   return (
     <div className="flex items-center justify-between">
-      <span className="text-[11px] text-[#aaa]">{label}</span>
+      <span className="text-[11px] text-[var(--text-faint)]">{label}</span>
       <div className="flex items-center gap-1">
         {editing ? (
           <input
@@ -664,19 +863,19 @@ function ExchangeRateRow({
             onKeyDown={(e) => {
               if (e.key === "Enter") (e.target as HTMLInputElement).blur();
             }}
-            className="w-16 text-right text-[12px] text-[#888] font-medium bg-[#EFF6FF] rounded px-1 border-none outline-none focus:bg-[#DBEAFE] transition-colors"
+            className="w-16 text-right text-[12px] text-[var(--text-muted)] font-medium bg-[var(--input-num-bg)] rounded px-1 border-none outline-none focus:bg-[var(--input-num-focus)] transition-colors"
             autoFocus
           />
         ) : (
           <button
             onClick={() => setEditing(true)}
-            className="text-[12px] text-[#888] font-medium hover:text-[#555] transition-colors cursor-text"
+            className="text-[12px] text-[var(--text-muted)] font-medium hover:text-[var(--text-secondary)] transition-colors cursor-text"
           >
             {prefix}{value}{suffix}
           </button>
         )}
         {onRefresh && (
-          <button onClick={onRefresh} className="text-[#bbb] hover:text-[#888] transition-colors ml-0.5" title="Refresh rate">
+          <button onClick={onRefresh} className="text-[var(--text-faint)] hover:text-[var(--text-muted)] transition-colors ml-0.5" title="Refresh rate">
             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
               <polyline points="23 4 23 10 17 10" /><polyline points="1 20 1 14 7 14" />
               <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
@@ -688,17 +887,94 @@ function ExchangeRateRow({
   );
 }
 
-function KPICard({ label, value, color }: { label: string; value: string; color: string }) {
+function KPICard({
+  label,
+  value,
+  tone,
+  series,
+  deltaLabel,
+  deltaImproving,
+}: {
+  label: string;
+  value: string;
+  tone: "positive" | "negative" | "income" | "warn" | "neutral";
+  series?: number[];
+  deltaLabel?: string;
+  deltaImproving?: boolean;
+}) {
+  const c = useThemeColors();
+  const sparkData = (series ?? []).map((v, i) => ({ i, v }));
+  const toneColor =
+    tone === "positive" ? c.greenStrong
+    : tone === "negative" ? c.redStrong
+    : tone === "income" ? c.greenStrong
+    : tone === "warn" ? c.goldDeep
+    : c.textSub;
+  const lineColor = toneColor;
+
   return (
-    <div className="bg-white rounded-2xl p-5 shadow-[0_1px_3px_rgba(0,0,0,0.04)]">
-      <p className="text-xs text-[#999] mb-1">{label}</p>
-      <p className="text-xl font-bold" style={{ fontFamily: "var(--font-heading)", color }}>{value}</p>
+    <div className="glass-card rounded-2xl p-3.5 md:p-5">
+      <div className="flex items-start justify-between gap-2">
+        <p className="text-[10px] md:text-[11px] text-[var(--text-muted)] uppercase tracking-wider whitespace-nowrap">{label}</p>
+        {sparkData.length > 1 && (
+          <div className="w-[56px] md:w-[70px] h-[20px] md:h-[24px] -mt-0.5 flex-shrink-0">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={sparkData} margin={{ top: 3, right: 3, bottom: 3, left: 3 }}>
+                <Line
+                  type="monotone"
+                  dataKey="v"
+                  stroke={lineColor}
+                  strokeWidth={1.75}
+                  isAnimationActive={false}
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  dot={(props: any) => {
+                    if (props.index !== sparkData.length - 1) {
+                      return <g key={`d-${props.index}`} />;
+                    }
+                    return (
+                      <circle
+                        key={`d-${props.index}`}
+                        cx={props.cx}
+                        cy={props.cy}
+                        r={2.5}
+                        fill={lineColor}
+                      />
+                    );
+                  }}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+      </div>
+      <p
+        className="text-base md:text-xl font-bold mt-1 tabular-nums"
+        style={{ fontFamily: "var(--font-heading)", color: toneColor }}
+      >
+        {value}
+      </p>
+      {deltaLabel && (
+        <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
+          <span
+            className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${
+              deltaImproving
+                ? "bg-[var(--accent-green-soft-bg)] text-[var(--accent-green-strong)]"
+                : "bg-[var(--accent-red-soft-bg)] text-[var(--accent-red-strong)]"
+            }`}
+          >
+            {deltaLabel}
+          </span>
+          <span className="text-[10px] md:text-[11px] text-[var(--text-muted)]">vs last mo.</span>
+        </div>
+      )}
     </div>
   );
 }
 
 /* ── 3D Isometric Chart — Assets up / Liabilities down (reference-based) ── */
 function YearlyPerformance3D({ records }: { records: { year: number; assets: number; liabilities: number; netWorth: number }[] }) {
+  const c = useThemeColors();
+
   // Compute per-year data from records
   const years2025 = records.filter((r) => r.year === 2025);
   const years2026 = records.filter((r) => r.year === 2026);
@@ -713,12 +989,12 @@ function YearlyPerformance3D({ records }: { records: { year: number; assets: num
   const DX = 20;
   const DY = 12;
   const colWidth = 160;
-  const colGap = 80;
-  const padLeft = 80;
+  const colGap = 56;
+  const padLeft = 48;
   const zeroGap = 15;
   const maxVal = Math.max(...data.map((d) => Math.max(d.assets, d.liabilities)), 1);
 
-  const scale = 160 / maxVal;
+  const scale = 150 / maxVal;
   function sc(v: number) { return Math.max(10, v * scale); }
 
   const maxAssetH = Math.max(...data.map((d) => sc(d.assets)));
@@ -738,23 +1014,23 @@ function YearlyPerformance3D({ records }: { records: { year: number; assets: num
   const svgW = padLeft + data.length * colWidth + (data.length - 1) * colGap + DX + 60;
   const svgH = maxLiabBottom + DY + 50;
 
-  const assetColors = { front: "#2DB89A", top: "#7DD8C4", right: "#1A8F78" };
-  const liabColors = { front: "rgba(248,113,113,0.55)", top: "rgba(252,165,165,0.55)", right: "rgba(220,38,38,0.55)" };
+  const assetColors = { front: c.green, top: c.greenSoft, right: c.greenDeep };
+  const liabColors = { front: c.liabFront, top: c.liabTop, right: c.liabRight };
 
   return (
     <div className="w-full">
       <div className="mb-2 flex items-center justify-center gap-6">
         <div className="flex items-center gap-2">
-          <div className="h-3.5 w-3.5 rounded-sm" style={{ backgroundColor: "#2DB89A" }} />
-          <span className="text-xs font-medium text-[#999]">Assets</span>
+          <div className="h-3.5 w-3.5 rounded-sm" style={{ backgroundColor: c.green }} />
+          <span className="text-xs font-medium text-[var(--text-muted)]">Assets</span>
         </div>
         <div className="flex items-center gap-2">
-          <div className="h-3.5 w-3.5 rounded-sm" style={{ backgroundColor: "rgba(248,113,113,0.7)" }} />
-          <span className="text-xs font-medium text-[#999]">Liabilities</span>
+          <div className="h-3.5 w-3.5 rounded-sm" style={{ backgroundColor: c.liabFront }} />
+          <span className="text-xs font-medium text-[var(--text-muted)]">Liabilities</span>
         </div>
       </div>
 
-      <svg viewBox={`0 0 ${svgW} ${svgH}`} className="mx-auto block w-full" style={{ maxHeight: 420 }}>
+      <svg viewBox={`0 0 ${svgW} ${svgH}`} preserveAspectRatio="xMidYMid meet" className="mx-auto block w-full" style={{ maxHeight: 420 }}>
         {columns.map((col, ci) => {
           if (ci === columns.length - 1) return null;
           const next = columns[ci + 1];
@@ -774,8 +1050,8 @@ function YearlyPerformance3D({ records }: { records: { year: number; assets: num
           );
         })}
 
-        <line x1={padLeft - 30} y1={zeroY} x2={svgW - 30} y2={zeroY} stroke="#D4D4D4" strokeWidth="1.5" />
-        <text x={padLeft - 35} y={zeroY + 4} textAnchor="end" fill="#bbb" fontSize="12">$0</text>
+        <line x1={padLeft - 30} y1={zeroY} x2={svgW - 30} y2={zeroY} stroke={c.baseline} strokeWidth="1.5" />
+        <text x={padLeft - 35} y={zeroY + 4} textAnchor="end" fill={c.axis} fontSize="13">$0</text>
 
         {columns.map((col) => {
           const { d, x, aH, lH, assetY, liabY, cx } = col;
@@ -806,21 +1082,22 @@ function YearlyPerformance3D({ records }: { records: { year: number; assets: num
                 x={cx + DX / 2}
                 y={assetY - DY - 14}
                 textAnchor="middle"
-                fontSize={15}
+                fontSize={16}
                 fontWeight={700}
-                fill="#1a1a1a"
+                fill={c.text}
                 style={{ fontFamily: "var(--font-heading)" }}
               >
-                {d.nw < 0 ? `-$${Math.abs(d.nw).toLocaleString()}` : `$${d.nw.toLocaleString()}`}
+                <title>{d.nw < 0 ? `-$${Math.abs(d.nw).toLocaleString()}` : `$${d.nw.toLocaleString()}`}</title>
+                {fmtCompact(d.nw)}
               </text>
 
               <text
                 x={cx}
                 y={liabY + lH + DY + 24}
                 textAnchor="middle"
-                fontSize={14}
+                fontSize={15}
                 fontWeight={500}
-                fill="#6b6560"
+                fill={c.axis}
                 style={{ fontFamily: "var(--font-body)" }}
               >
                 {d.year}

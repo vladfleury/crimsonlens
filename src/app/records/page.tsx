@@ -1,9 +1,10 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useCallback } from "react";
 import DashboardLayout from "@/components/DashboardLayout";
 import { useFinance } from "@/hooks/FinanceDataContext";
 import type { MonthlyRecord } from "@/hooks/useFinanceData";
+import type { IncomeTransaction } from "@/lib/data";
 import { formatCurrency, formatPercent, monthNames } from "@/data/mockData";
 
 type YearFilter = "all" | "2026" | "2025";
@@ -14,18 +15,18 @@ function getLastDayOfMonth(year: number, month: number): string {
 }
 
 function savingsRateColor(pct: number): string {
-  if (pct < 10) return "#DC2626";
-  if (pct < 25) return "#C4A84D";
-  return "#0D9B7A";
+  if (pct < 10) return "var(--accent-red-strong)";
+  if (pct < 25) return "var(--accent-gold-deep)";
+  return "var(--accent-green-strong)";
 }
 
 /* ── Column group definitions ── */
 const COL_GROUPS = [
-  { label: "PERIOD", cols: 1, color: "#F5F0E8", textColor: "#8A8A8A" },
-  { label: "ASSETS & LIABILITIES", cols: 2, color: "#E6F7F3", textColor: "#0D9B7A" },
-  { label: "INCOME", cols: 2, color: "#E6F7F3", textColor: "#0D9B7A" },
-  { label: "EXPENSES", cols: 2, color: "#FEF2F2", textColor: "#DC2626" },
-  { label: "PERFORMANCE", cols: 6, color: "#FDF8E8", textColor: "#B8941F" },
+  { label: "PERIOD", cols: 1, color: "var(--surface-sunken)", textColor: "var(--text-muted)" },
+  { label: "ASSETS & LIABILITIES", cols: 2, color: "var(--accent-green-soft-bg)", textColor: "var(--accent-green-strong)" },
+  { label: "INCOME", cols: 2, color: "var(--accent-green-soft-bg)", textColor: "var(--accent-green-strong)" },
+  { label: "EXPENSES", cols: 2, color: "var(--accent-red-soft-bg)", textColor: "var(--accent-red-strong)" },
+  { label: "PERFORMANCE", cols: 6, color: "var(--accent-gold-soft-bg)", textColor: "var(--accent-gold-deep)" },
 ];
 
 const COL_HEADERS = [
@@ -37,15 +38,61 @@ const COL_HEADERS = [
 ];
 
 export default function RecordsPage() {
-  const { monthlyRecords, incomeBySource, upsertRecord, upsertIncomeOnly, isLoading, error, refetch } = useFinance();
+  const {
+    monthlyRecords, incomeBySource, incomeTransactions, monthlyIncomeAgg,
+    upsertRecord, upsertIncomeOnly,
+    insertIncomeTx, updateIncomeTx, deleteIncomeTx,
+    plnUsdRate, usdEurRate, bynUsdRate,
+    isLoading, error, refetch,
+  } = useFinance();
   const [yearFilter, setYearFilter] = useState<YearFilter>("all");
   const [editingRecord, setEditingRecord] = useState<MonthlyRecord | null>(null);
   const [showAddForm, setShowAddForm] = useState(false);
+  const [showAddIncome, setShowAddIncome] = useState(false);
+  const [editingIncomeTx, setEditingIncomeTx] = useState<IncomeTransaction | null>(null);
+  const [deletingTxId, setDeletingTxId] = useState<number | null>(null);
 
   const filtered = useMemo(() => {
     if (yearFilter === "all") return monthlyRecords;
     return monthlyRecords.filter((r) => r.year === Number(yearFilter));
   }, [yearFilter, monthlyRecords]);
+
+  const filteredTx = useMemo(() => {
+    if (yearFilter === "all") return incomeTransactions;
+    return incomeTransactions.filter((tx) => {
+      const d = new Date(tx.date + "T00:00:00");
+      return d.getFullYear() === Number(yearFilter);
+    });
+  }, [yearFilter, incomeTransactions]);
+
+  // Group transactions by year-month
+  const groupedTx = useMemo(() => {
+    const groups: Record<string, IncomeTransaction[]> = {};
+    for (const tx of filteredTx) {
+      const d = new Date(tx.date + "T00:00:00");
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(tx);
+    }
+    return Object.entries(groups)
+      .sort(([a], [b]) => b.localeCompare(a))
+      .map(([key, txs]) => {
+        const [y, m] = key.split("-").map(Number);
+        const total = txs.reduce((s, t) => s + t.usd_amount, 0);
+        return { key, year: y, month: m, label: `${monthNames[m - 1]} ${y}`, txs, total };
+      });
+  }, [filteredTx]);
+
+  // Unique sources for autocomplete
+  const existingSources = useMemo(() => {
+    const set = new Set(incomeTransactions.map((tx) => tx.source));
+    return Array.from(set).sort();
+  }, [incomeTransactions]);
+
+  const handleDeleteTx = useCallback(async (id: number) => {
+    await deleteIncomeTx(id);
+    setDeletingTxId(null);
+  }, [deleteIncomeTx]);
 
   const grouped = useMemo(() => {
     const groups: Record<number, MonthlyRecord[]> = {};
@@ -71,8 +118,8 @@ export default function RecordsPage() {
       <DashboardLayout>
         <div className="max-w-[1400px] mx-auto flex items-center justify-center h-[60vh]">
           <div className="flex flex-col items-center gap-3">
-            <div className="w-8 h-8 border-2 border-[#2DB89A] border-t-transparent rounded-full animate-spin" />
-            <span className="text-sm text-[#999]">Loading records...</span>
+            <div className="w-8 h-8 border-2 border-[var(--accent-green)] border-t-transparent rounded-full animate-spin" />
+            <span className="text-sm text-[var(--text-muted)]">Loading records...</span>
           </div>
         </div>
       </DashboardLayout>
@@ -84,9 +131,9 @@ export default function RecordsPage() {
       <DashboardLayout>
         <div className="max-w-[1400px] mx-auto flex items-center justify-center h-[60vh]">
           <div className="flex flex-col items-center gap-3 text-center">
-            <p className="text-sm text-[#DC2626] font-medium">Failed to load data</p>
-            <p className="text-xs text-[#999]">{error}</p>
-            <button onClick={refetch} className="mt-2 px-4 py-2 bg-[#1a1a1a] text-white rounded-xl text-sm font-medium hover:bg-[#333] transition-colors">
+            <p className="text-sm text-[var(--accent-red)] font-medium">Failed to load data</p>
+            <p className="text-xs text-[var(--text-muted)]">{error}</p>
+            <button onClick={refetch} className="mt-2 px-4 py-2 bg-[var(--text)] text-[var(--bg)] rounded-xl text-sm font-medium hover:opacity-90 transition-colors">
               Retry
             </button>
           </div>
@@ -98,37 +145,45 @@ export default function RecordsPage() {
   return (
     <DashboardLayout>
       <div className="max-w-[1400px] mx-auto">
-        <div className="flex items-start justify-between mb-6">
+        <div className="flex items-start justify-between mb-6 gap-3 flex-wrap">
           <div>
-            <h1 className="text-2xl font-bold" style={{ fontFamily: "var(--font-heading)" }}>Monthly Records</h1>
-            <p className="text-sm text-[#999] mt-1">Manage your financial data</p>
+            <h1 className="text-xl md:text-2xl font-bold" style={{ fontFamily: "var(--font-heading)" }}>Monthly Records</h1>
+            <p className="text-sm text-[var(--text-muted)] mt-1">Manage your financial data</p>
           </div>
-          <button
-            onClick={() => setShowAddForm(true)}
-            className="px-5 py-2.5 bg-[#1a1a1a] text-white rounded-xl text-sm font-medium hover:bg-[#333] transition-colors"
-          >
-            + Add Record
-          </button>
+          <div className="flex gap-2 w-full md:w-auto">
+            <button
+              onClick={() => setShowAddIncome(true)}
+              className="flex-1 md:flex-none px-3.5 md:px-5 py-2.5 bg-[var(--accent-green)] text-white rounded-xl text-sm font-medium hover:opacity-90 transition-colors shadow-[0_4px_14px_-4px_rgba(41,183,154,0.45)]"
+            >
+              + Add Income
+            </button>
+            <button
+              onClick={() => setShowAddForm(true)}
+              className="flex-1 md:flex-none px-3.5 md:px-5 py-2.5 bg-[var(--text)] text-[var(--bg)] rounded-xl text-sm font-medium hover:opacity-90 transition-colors shadow-[0_4px_14px_-4px_rgba(0,0,0,0.45)]"
+            >
+              + Add Record
+            </button>
+          </div>
         </div>
 
         <div className="flex items-center justify-between mb-6">
-          <div className="flex gap-1 bg-[#F5F3EF] rounded-xl p-1">
+          <div className="flex gap-1 bg-[var(--chip)] rounded-xl p-1">
             {years.map((y) => (
               <button
                 key={y}
                 onClick={() => setYearFilter(y)}
                 className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-all ${
-                  yearFilter === y ? "bg-[#1a1a1a] text-white shadow-sm" : "text-[#888] hover:text-[#555]"
+                  yearFilter === y ? "bg-[var(--text)] text-[var(--bg)] shadow-sm" : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
                 }`}
               >
                 {yearLabels[y]}
               </button>
             ))}
           </div>
-          <span className="text-sm text-[#999]">{filtered.length} records</span>
+          <span className="text-sm text-[var(--text-muted)]">{filtered.length} records</span>
         </div>
 
-        <div className="rounded-xl overflow-hidden" style={{ border: "2px solid #D4D0C8" }}>
+        <div className="rounded-xl overflow-hidden" style={{ border: "2px solid var(--border-strong)" }}>
           <div className="overflow-x-auto">
             <table className="w-full text-sm" style={{ borderCollapse: "separate", borderSpacing: 0 }}>
               {/* ── Colored column group headers ── */}
@@ -143,8 +198,8 @@ export default function RecordsPage() {
                         fontFamily: "var(--font-heading)",
                         backgroundColor: g.color,
                         color: g.textColor,
-                        borderBottom: "2px solid #D4D0C8",
-                        borderRight: gi < COL_GROUPS.length - 1 ? "2px solid #D4D0C8" : "none",
+                        borderBottom: "2px solid var(--border-strong)",
+                        borderRight: gi < COL_GROUPS.length - 1 ? "2px solid var(--border-strong)" : "none",
                       }}
                     >
                       {g.label}
@@ -152,15 +207,15 @@ export default function RecordsPage() {
                   ))}
                 </tr>
                 {/* ── Column name headers ── */}
-                <tr style={{ backgroundColor: "#FAF8F4" }}>
+                <tr style={{ backgroundColor: "var(--surface)" }}>
                   {COL_HEADERS.map((h, i) => (
                     <th
                       key={h}
-                      className="text-left px-4 py-2.5 text-[11px] font-semibold text-[#999] whitespace-nowrap"
+                      className="text-left px-4 py-2.5 text-[11px] font-semibold text-[var(--text-muted)] whitespace-nowrap"
                       style={{
                         fontFamily: "var(--font-heading)",
-                        borderBottom: "2px solid #D4D0C8",
-                        borderRight: i < COL_HEADERS.length - 1 ? "1px solid #E8E5E0" : "none",
+                        borderBottom: "2px solid var(--border-strong)",
+                        borderRight: i < COL_HEADERS.length - 1 ? "1px solid var(--border)" : "none",
                         minWidth: i === 0 ? 120 : 95,
                       }}
                     >
@@ -183,14 +238,113 @@ export default function RecordsPage() {
             </table>
           </div>
         </div>
+
+        {/* ── Income Transactions Section ── */}
+        <div className="mt-8">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-lg font-bold" style={{ fontFamily: "var(--font-heading)" }}>Income Transactions</h2>
+            <span className="text-sm text-[var(--text-muted)]">{filteredTx.length} transactions</span>
+          </div>
+          <div className="rounded-xl overflow-hidden" style={{ border: "2px solid var(--border-strong)" }}>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm" style={{ borderCollapse: "separate", borderSpacing: 0 }}>
+                <thead>
+                  <tr style={{ backgroundColor: "var(--surface)" }}>
+                    {["Date", "Source", "Currency", "Amount", "USD Amount", "Notes", ""].map((h, i) => (
+                      <th
+                        key={h || "actions"}
+                        className="text-left px-4 py-2.5 text-[11px] font-semibold text-[var(--text-muted)] whitespace-nowrap"
+                        style={{
+                          fontFamily: "var(--font-heading)",
+                          borderBottom: "2px solid var(--border-strong)",
+                          borderRight: i < 6 ? "1px solid var(--border)" : "none",
+                          minWidth: h === "Notes" ? 140 : h === "" ? 60 : 90,
+                        }}
+                      >
+                        {h}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {groupedTx.length === 0 && (
+                    <tr>
+                      <td colSpan={7} className="px-4 py-8 text-center text-sm text-[var(--text-muted)]">
+                        No income transactions yet. Click "+ Add Income" to get started.
+                      </td>
+                    </tr>
+                  )}
+                  {groupedTx.map((group) => (
+                    <IncomeGroupRows
+                      key={group.key}
+                      label={group.label}
+                      txs={group.txs}
+                      total={group.total}
+                      onEdit={(tx) => setEditingIncomeTx(tx)}
+                      onDelete={(id) => setDeletingTxId(id)}
+                    />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
       </div>
+
+      {/* Delete confirmation dialog */}
+      {deletingTxId !== null && (
+        <>
+          <div className="fixed inset-0 bg-[var(--scrim)] z-40" onClick={() => setDeletingTxId(null)} />
+          <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-[var(--surface)] rounded-2xl p-6 shadow-xl z-50 w-[340px]">
+            <h3 className="text-sm font-bold mb-2" style={{ fontFamily: "var(--font-heading)" }}>Delete Transaction?</h3>
+            <p className="text-xs text-[var(--text-muted)] mb-4">This action cannot be undone.</p>
+            <div className="flex gap-2">
+              <button onClick={() => handleDeleteTx(deletingTxId)} className="flex-1 py-2.5 bg-[var(--accent-red)] text-white rounded-xl font-medium text-sm hover:bg-[var(--accent-red-deep)] transition-colors">
+                Delete
+              </button>
+              <button onClick={() => setDeletingTxId(null)} className="flex-1 py-2.5 bg-[var(--chip)] text-[var(--text-muted)] rounded-xl font-medium text-sm hover:bg-[var(--border)] transition-colors">
+                Cancel
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* Income transaction panels */}
+      {showAddIncome && (
+        <IncomeTransactionPanel
+          mode="add"
+          existingSources={existingSources}
+          plnUsdRate={plnUsdRate}
+          usdEurRate={usdEurRate}
+          bynUsdRate={bynUsdRate}
+          onClose={() => setShowAddIncome(false)}
+          onSave={insertIncomeTx}
+        />
+      )}
+
+      {editingIncomeTx && (
+        <IncomeTransactionPanel
+          mode="edit"
+          tx={editingIncomeTx}
+          existingSources={existingSources}
+          plnUsdRate={plnUsdRate}
+          usdEurRate={usdEurRate}
+          bynUsdRate={bynUsdRate}
+          onClose={() => setEditingIncomeTx(null)}
+          onSave={async (data) => {
+            await updateIncomeTx(editingIncomeTx.id, data);
+          }}
+        />
+      )}
 
       {editingRecord && editingRecord.isLive && (
         <LiveRecordPanel
           record={editingRecord}
-          incomeSource={getIncomeSource(editingRecord)}
+          currentMonthIncome={monthlyIncomeAgg.find((a) => a.year === editingRecord.year && a.month === editingRecord.month)?.total ?? 0}
+          incomeBySource={monthlyIncomeAgg.find((a) => a.year === editingRecord.year && a.month === editingRecord.month)?.bySource ?? {}}
           onClose={() => setEditingRecord(null)}
-          onSaveIncome={upsertIncomeOnly}
+          onSaveAdjustment={upsertIncomeOnly}
           onFinalize={upsertRecord}
         />
       )}
@@ -245,12 +399,12 @@ function GroupRows({
         <td
           colSpan={13}
           className="px-4 py-2.5"
-          style={{ backgroundColor: "#F0EDE8", borderBottom: "2px solid #D4D0C8" }}
+          style={{ backgroundColor: "var(--surface-sunken)", borderBottom: "2px solid var(--border-strong)" }}
         >
           <div className="flex items-center gap-3">
             <span
               className="text-xs font-bold tracking-wide uppercase"
-              style={{ fontFamily: "var(--font-heading)", color: "#666" }}
+              style={{ fontFamily: "var(--font-heading)", color: "var(--text-muted)" }}
             >
               {year}
             </span>
@@ -258,8 +412,8 @@ function GroupRows({
               <span
                 className="text-[10px] font-semibold px-2.5 py-0.5 rounded-full"
                 style={{
-                  backgroundColor: totalSavings >= 0 ? "#E6F7F3" : "#FEF2F2",
-                  color: totalSavings >= 0 ? "#0D9B7A" : "#DC2626",
+                  backgroundColor: totalSavings >= 0 ? "var(--accent-green-soft-bg)" : "var(--accent-red-soft-bg)",
+                  color: totalSavings >= 0 ? "var(--accent-green-strong)" : "var(--accent-red-strong)",
                   fontFamily: "var(--font-heading)",
                 }}
               >
@@ -276,29 +430,29 @@ function GroupRows({
           key={r.label}
           className="cursor-pointer transition-colors group"
           style={{
-            backgroundColor: idx % 2 === 0 ? "#FFFFFF" : "#FAF8F2",
+            backgroundColor: idx % 2 === 0 ? "var(--surface)" : "var(--surface-2)",
           }}
-          onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "#F5F0E8"; }}
-          onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = idx % 2 === 0 ? "#FFFFFF" : "#FAF8F2"; }}
+          onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "var(--surface-sunken)"; }}
+          onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = idx % 2 === 0 ? "var(--surface)" : "var(--surface-2)"; }}
           onClick={() => onEdit(r)}
         >
           <Cell border>{r.label}{r.isLive && <LiveBadge />}</Cell>
           <Cell border>{formatCurrency(r.assets)}</Cell>
           <Cell border>{formatCurrency(r.liabilities)}</Cell>
           <Cell border>{r.income > 0 ? formatCurrency(r.income) : "—"}</Cell>
-          <Cell border color="#C4A84D">
+          <Cell border color="var(--accent-gold-deep)">
             {r.expenseAdjustment > 0 ? `-${formatCurrency(r.expenseAdjustment)}` : r.expenseAdjustment < 0 ? `+${formatCurrency(Math.abs(r.expenseAdjustment))}` : "—"}
           </Cell>
           <Cell border>{r.expenses > 0 ? formatCurrency(r.expenses) : "—"}</Cell>
           <Cell border>{r.adjustedExpenses > 0 ? formatCurrency(r.adjustedExpenses) : "—"}</Cell>
-          <Cell border color={r.netWorth >= 0 ? "#0D9B7A" : "#DC2626"} bold>{formatCurrency(r.netWorth)}</Cell>
+          <Cell border color={r.netWorth >= 0 ? "var(--accent-green-strong)" : "var(--accent-red-strong)"} bold>{formatCurrency(r.netWorth)}</Cell>
           <Cell border>
             {r.netWorthMoM !== null ? (
               <span
                 className="inline-block px-2 py-0.5 rounded-full text-[11px] font-semibold"
                 style={{
-                  backgroundColor: r.netWorthMoM >= 0 ? "#E6F7F3" : "#FEF2F2",
-                  color: r.netWorthMoM >= 0 ? "#0D9B7A" : "#DC2626",
+                  backgroundColor: r.netWorthMoM >= 0 ? "var(--accent-green-soft-bg)" : "var(--accent-red-soft-bg)",
+                  color: r.netWorthMoM >= 0 ? "var(--accent-green-strong)" : "var(--accent-red-strong)",
                 }}
               >
                 {formatPercent(r.netWorthMoM, true)}
@@ -318,22 +472,22 @@ function GroupRows({
 
       {/* Totals row */}
       {yearRecordsWithData.length > 0 && (
-        <tr style={{ backgroundColor: "#F5F3EF", borderTop: "2px solid #D4D0C8" }}>
+        <tr style={{ backgroundColor: "var(--chip)", borderTop: "2px solid var(--border-strong)" }}>
           <TotalCell border>
-            <span className="font-bold text-[#666]" style={{ fontFamily: "var(--font-heading)" }}>Totals</span>
+            <span className="font-bold text-[var(--text-muted)]" style={{ fontFamily: "var(--font-heading)" }}>Totals</span>
           </TotalCell>
           <TotalCell border />
           <TotalCell border />
-          <TotalCell border bold color="#4A4A4A">{formatCurrency(totalIncome)}</TotalCell>
+          <TotalCell border bold color="var(--text-secondary)">{formatCurrency(totalIncome)}</TotalCell>
           <TotalCell border />
           <TotalCell border />
-          <TotalCell border bold color="#4A4A4A">{formatCurrency(totalExpenses)}</TotalCell>
+          <TotalCell border bold color="var(--text-secondary)">{formatCurrency(totalExpenses)}</TotalCell>
           <TotalCell border />
           <TotalCell border />
-          <TotalCell border color="#4A4A4A">{formatPercent(avgBurnRate * 100)}</TotalCell>
+          <TotalCell border color="var(--text-secondary)">{formatPercent(avgBurnRate * 100)}</TotalCell>
           <TotalCell border bold>{formatCurrency(totalSavings)}</TotalCell>
           <TotalCell border />
-          <TotalCell color="#4A4A4A">{formatCurrency(yearRecordsWithData.reduce((s, r) => s + r.debtRepayment, 0))}</TotalCell>
+          <TotalCell color="var(--text-secondary)">{formatCurrency(yearRecordsWithData.reduce((s, r) => s + r.debtRepayment, 0))}</TotalCell>
         </tr>
       )}
     </>
@@ -351,9 +505,9 @@ function Cell({ children, border, color, bold }: {
     <td
       className="px-4 py-3 whitespace-nowrap"
       style={{
-        borderBottom: "1px solid #E8E5E0",
-        borderRight: border ? "1px solid #E8E5E0" : "none",
-        color: color || "#4A4A4A",
+        borderBottom: "1px solid var(--border)",
+        borderRight: border ? "1px solid var(--border)" : "none",
+        color: color || "var(--text-secondary)",
         fontWeight: bold ? 600 : 400,
       }}
     >
@@ -372,8 +526,8 @@ function TotalCell({ children, border, color, bold }: {
     <td
       className="px-4 py-2.5 text-xs whitespace-nowrap"
       style={{
-        borderTop: "2px solid #D4D0C8",
-        borderRight: border ? "1px solid #E8E5E0" : "none",
+        borderTop: "2px solid var(--border-strong)",
+        borderRight: border ? "1px solid var(--border)" : "none",
         color: color || "transparent",
         fontWeight: bold ? 700 : 400,
         fontFamily: "var(--font-heading)",
@@ -386,25 +540,23 @@ function TotalCell({ children, border, color, bold }: {
 
 function LiveBadge() {
   return (
-    <span className="ml-2 text-[9px] px-1.5 py-0.5 bg-[#E6F7F3] text-[#0D9B7A] rounded-full not-italic font-semibold inline-block align-middle">
+    <span className="ml-2 text-[9px] px-1.5 py-0.5 bg-[var(--accent-green-soft-bg)] text-[var(--accent-green-strong)] rounded-full not-italic font-semibold inline-block align-middle">
       LIVE
     </span>
   );
 }
 
 /* ── LIVE Record Panel ── */
-function LiveRecordPanel({ record, incomeSource, onClose, onSaveIncome, onFinalize }: {
+function LiveRecordPanel({ record, currentMonthIncome, incomeBySource, onClose, onSaveAdjustment, onFinalize }: {
   record: MonthlyRecord;
-  incomeSource?: { kufar: number; tokMedia: number; other: number };
+  currentMonthIncome: number;
+  incomeBySource: Record<string, number>;
   onClose: () => void;
-  onSaveIncome: (inc: { year: number; date: string; kufar: number; tokmedia: number; other: number; total: number; expense_adjustment?: number }) => Promise<void>;
+  onSaveAdjustment: (inc: { year: number; date: string; kufar: number; tokmedia: number; other: number; total: number; expense_adjustment?: number }) => Promise<void>;
   onFinalize: (al: { year: number; date: string; assets: number; liabilities: number }, inc: { year: number; date: string; kufar: number; tokmedia: number; other: number; total: number; expense_adjustment?: number }) => Promise<void>;
 }) {
   const initAdj = record.expenseAdjustment ?? 0;
   const [form, setForm] = useState({
-    kufar: incomeSource?.kufar ?? 0,
-    tokmedia: incomeSource?.tokMedia ?? 0,
-    other: incomeSource?.other ?? 0,
     adjDirection: initAdj >= 0 ? "reduce" as const : "add" as const,
     adjAmount: Math.abs(initAdj),
   });
@@ -413,20 +565,17 @@ function LiveRecordPanel({ record, incomeSource, onClose, onSaveIncome, onFinali
   const [showFinalizeConfirm, setShowFinalizeConfirm] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
-  const update = (field: string, value: string) => {
-    setForm((f) => ({ ...f, [field]: value === "" ? 0 : Number(value) }));
-  };
-
-  const totalIncome = form.kufar + form.tokmedia + form.other;
   const date = getLastDayOfMonth(record.year, record.month);
+  const sourceEntries = Object.entries(incomeBySource).sort(([, a], [, b]) => b - a);
 
-  const handleSaveIncome = async () => {
+  const handleSaveAdjustment = async () => {
     setSaving(true);
     setSaveError(null);
     try {
-      await onSaveIncome({
+      // Save adjustment to legacy income_data (keeps expense_adjustment working)
+      await onSaveAdjustment({
         year: record.year, date,
-        kufar: form.kufar, tokmedia: form.tokmedia, other: form.other, total: totalIncome,
+        kufar: 0, tokmedia: 0, other: 0, total: 0,
         expense_adjustment: computedAdjustment,
       });
       onClose();
@@ -444,7 +593,7 @@ function LiveRecordPanel({ record, incomeSource, onClose, onSaveIncome, onFinali
     try {
       await onFinalize(
         { year: record.year, date, assets: record.assets, liabilities: record.liabilities },
-        { year: record.year, date, kufar: form.kufar, tokmedia: form.tokmedia, other: form.other, total: totalIncome, expense_adjustment: computedAdjustment },
+        { year: record.year, date, kufar: 0, tokmedia: 0, other: 0, total: 0, expense_adjustment: computedAdjustment },
       );
       onClose();
     } catch (err) {
@@ -457,15 +606,15 @@ function LiveRecordPanel({ record, incomeSource, onClose, onSaveIncome, onFinali
 
   return (
     <>
-      <div className="fixed inset-0 bg-black/20 z-40" onClick={onClose} />
-      <div className="fixed right-0 top-0 bottom-0 w-[420px] bg-white shadow-xl z-50 overflow-y-auto animate-slide-in">
+      <div className="fixed inset-0 bg-[var(--scrim)] z-40" onClick={onClose} />
+      <div className="fixed right-0 top-0 bottom-0 w-[420px] bg-[var(--surface)] shadow-xl z-50 overflow-y-auto animate-slide-in">
         <div className="p-6">
           <div className="flex items-center justify-between mb-6">
             <div className="flex items-center gap-2">
               <h2 className="text-lg font-bold" style={{ fontFamily: "var(--font-heading)" }}>{record.label}</h2>
-              <span className="text-[9px] px-1.5 py-0.5 bg-[#E6F7F3] text-[#0D9B7A] rounded-full font-semibold">LIVE</span>
+              <span className="text-[9px] px-1.5 py-0.5 bg-[var(--accent-green-soft-bg)] text-[var(--accent-green-strong)] rounded-full font-semibold">LIVE</span>
             </div>
-            <button onClick={onClose} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[#F5F3EF] text-[#999] transition-colors">
+            <button onClick={onClose} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[var(--chip)] text-[var(--text-muted)] transition-colors">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
               </svg>
@@ -474,85 +623,81 @@ function LiveRecordPanel({ record, incomeSource, onClose, onSaveIncome, onFinali
 
           {/* Assets & Liabilities — read-only */}
           <div className="mb-5">
-            <h3 className="text-xs font-semibold text-[#999] uppercase tracking-wide mb-2" style={{ fontFamily: "var(--font-heading)" }}>Assets &amp; Liabilities</h3>
-            <p className="text-[10px] text-[#bbb] mb-2">Auto-calculated from current accounts &amp; debts</p>
+            <h3 className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wide mb-2" style={{ fontFamily: "var(--font-heading)" }}>Assets &amp; Liabilities</h3>
+            <p className="text-[10px] text-[var(--text-faint)] mb-2">Auto-calculated from current accounts &amp; debts</p>
             <div className="mb-2">
-              <label className="text-xs text-[#888] mb-1 block">Total Assets (USD)</label>
-              <input type="number" value={record.assets} readOnly className="w-full px-3 py-2 rounded-xl bg-[#F0EDE8] text-sm outline-none border-none text-[#999] cursor-not-allowed" />
+              <label className="text-xs text-[var(--text-muted)] mb-1 block">Total Assets (USD)</label>
+              <input type="number" value={record.assets} readOnly className="w-full px-3 py-2 rounded-xl bg-[var(--surface-sunken)] text-sm outline-none border-none text-[var(--text-muted)] cursor-not-allowed" />
             </div>
             <div className="mb-2">
-              <label className="text-xs text-[#888] mb-1 block">Total Liabilities (USD)</label>
-              <input type="number" value={record.liabilities} readOnly className="w-full px-3 py-2 rounded-xl bg-[#F0EDE8] text-sm outline-none border-none text-[#999] cursor-not-allowed" />
-            </div>
-          </div>
-
-          {/* Income by Source */}
-          <div className="mb-5">
-            <h3 className="text-xs font-semibold text-[#999] uppercase tracking-wide mb-2" style={{ fontFamily: "var(--font-heading)" }}>Income by Source</h3>
-            <div className="mb-2">
-              <label className="text-xs text-[#888] mb-1 block">Kufar</label>
-              <input type="number" value={form.kufar} onChange={(e) => update("kufar", e.target.value)} className="w-full px-3 py-2 rounded-xl bg-[#F8F6F2] text-sm outline-none border-none" />
-            </div>
-            <div className="mb-2">
-              <label className="text-xs text-[#888] mb-1 block">TokMedia</label>
-              <input type="number" value={form.tokmedia} onChange={(e) => update("tokmedia", e.target.value)} className="w-full px-3 py-2 rounded-xl bg-[#F8F6F2] text-sm outline-none border-none" />
-            </div>
-            <div className="mb-2">
-              <label className="text-xs text-[#888] mb-1 block">Other</label>
-              <input type="number" value={form.other} onChange={(e) => update("other", e.target.value)} className="w-full px-3 py-2 rounded-xl bg-[#F8F6F2] text-sm outline-none border-none" />
+              <label className="text-xs text-[var(--text-muted)] mb-1 block">Total Liabilities (USD)</label>
+              <input type="number" value={record.liabilities} readOnly className="w-full px-3 py-2 rounded-xl bg-[var(--surface-sunken)] text-sm outline-none border-none text-[var(--text-muted)] cursor-not-allowed" />
             </div>
           </div>
 
-          {/* Total Income — read-only */}
+          {/* Current Month Income — read-only from income_transactions */}
           <div className="mb-5">
-            <label className="text-xs text-[#888] mb-1 block">Total Income (auto-calculated)</label>
-            <input type="text" value={`$${totalIncome.toLocaleString()}`} readOnly className="w-full px-3 py-2 rounded-xl bg-[#F0EDE8] text-sm outline-none border-none text-[#999] cursor-not-allowed" />
+            <h3 className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wide mb-2" style={{ fontFamily: "var(--font-heading)" }}>Current Month Income</h3>
+            <p className="text-xl font-bold mb-2" style={{ fontFamily: "var(--font-heading)", color: "var(--accent-green-strong)" }}>
+              ${currentMonthIncome.toLocaleString()}
+            </p>
+            {sourceEntries.length > 0 && (
+              <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-[var(--text-muted)]">
+                {sourceEntries.map(([source, amount], i) => (
+                  <span key={source}>
+                    {source}: <span className="font-medium">${amount.toLocaleString()}</span>
+                    {i < sourceEntries.length - 1 && <span className="text-[var(--text-faint)] ml-1">|</span>}
+                  </span>
+                ))}
+              </div>
+            )}
+            <p className="text-[10px] text-[var(--text-faint)] mt-2">To add or edit income, use the + Add Income button on the Records page</p>
           </div>
 
           {/* Expense Adjustment */}
           <div className="mb-5">
-            <h3 className="text-xs font-semibold text-[#999] uppercase tracking-wide mb-1" style={{ fontFamily: "var(--font-heading)" }}>Expense Adjustment</h3>
+            <h3 className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wide mb-1" style={{ fontFamily: "var(--font-heading)" }}>Expense Adjustment</h3>
             <div className="flex gap-2 mb-2">
               <button
                 onClick={() => setForm((f) => ({ ...f, adjDirection: "reduce" as const }))}
-                className={`flex-1 py-1.5 rounded-lg text-xs font-medium transition-all ${form.adjDirection === "reduce" ? "bg-[#0D9B7A] text-white" : "bg-[#F5F3EF] text-[#888]"}`}
+                className={`flex-1 py-1.5 rounded-lg text-xs font-medium transition-all ${form.adjDirection === "reduce" ? "bg-[var(--accent-green-strong)] text-white" : "bg-[var(--chip)] text-[var(--text-muted)]"}`}
               >
                 Reduce expenses
               </button>
               <button
                 onClick={() => setForm((f) => ({ ...f, adjDirection: "add" as const }))}
-                className={`flex-1 py-1.5 rounded-lg text-xs font-medium transition-all ${form.adjDirection === "add" ? "bg-[#DC2626] text-white" : "bg-[#F5F3EF] text-[#888]"}`}
+                className={`flex-1 py-1.5 rounded-lg text-xs font-medium transition-all ${form.adjDirection === "add" ? "bg-[var(--accent-red)] text-white" : "bg-[var(--chip)] text-[var(--text-muted)]"}`}
               >
                 Add to expenses
               </button>
             </div>
-            <input type="number" value={form.adjAmount || ""} onChange={(e) => setForm((f) => ({ ...f, adjAmount: e.target.value === "" ? 0 : Math.abs(Number(e.target.value)) }))} placeholder="0" className="w-full px-3 py-2 rounded-xl bg-[#F8F6F2] text-sm outline-none border-none" />
-            <p className="text-[10px] text-[#bbb] mt-1">Use this for non-expense outflows (deposits, investments) or missed expenses</p>
+            <input type="number" value={form.adjAmount || ""} onChange={(e) => setForm((f) => ({ ...f, adjAmount: e.target.value === "" ? 0 : Math.abs(Number(e.target.value)) }))} placeholder="0" className="w-full px-3 py-2 rounded-xl bg-[var(--input-bg)] text-sm outline-none border-none" />
+            <p className="text-[10px] text-[var(--text-faint)] mt-1">Use this for non-expense outflows (deposits, investments) or missed expenses</p>
           </div>
 
           {saveError && (
-            <div className="mb-3 p-2 bg-[#FEF2F2] rounded-xl text-xs text-[#DC2626]">Error: {saveError}</div>
+            <div className="mb-3 p-2 bg-[var(--accent-red-soft-bg)] rounded-xl text-xs text-[var(--accent-red-strong)]">Error: {saveError}</div>
           )}
 
           <div className="flex flex-col gap-3">
-            <button onClick={handleSaveIncome} disabled={saving} className="w-full py-3 border-2 border-[#2DB89A] text-[#2DB89A] rounded-xl font-medium text-sm hover:bg-[#E6F7F3] transition-colors disabled:opacity-50">
-              {saving ? "Saving..." : "Save Income"}
+            <button onClick={handleSaveAdjustment} disabled={saving} className="w-full py-3 border-2 border-[var(--accent-green)] text-[var(--accent-green)] rounded-xl font-medium text-sm hover:bg-[var(--accent-green-soft-bg)] transition-colors disabled:opacity-50">
+              {saving ? "Saving..." : "Save Adjustment"}
             </button>
 
             {!showFinalizeConfirm ? (
-              <button onClick={() => setShowFinalizeConfirm(true)} disabled={saving} className="w-full py-3 bg-[#2DB89A] text-white rounded-xl font-medium text-sm hover:bg-[#1A8F78] transition-colors disabled:opacity-50">
+              <button onClick={() => setShowFinalizeConfirm(true)} disabled={saving} className="w-full py-3 bg-[var(--accent-green)] text-white rounded-xl font-medium text-sm hover:opacity-90 transition-colors disabled:opacity-50">
                 Finalize Month
               </button>
             ) : (
-              <div className="border-2 border-[#C4A84D] rounded-xl p-3">
-                <p className="text-xs text-[#888] mb-3">
+              <div className="border-2 border-[var(--accent-gold)] rounded-xl p-3">
+                <p className="text-xs text-[var(--text-muted)] mb-3">
                   This will permanently save assets (${record.assets.toLocaleString()}) and liabilities (${Math.abs(record.liabilities).toLocaleString()}) for {record.label}. The LIVE badge will move to next month.
                 </p>
                 <div className="flex gap-2">
-                  <button onClick={handleFinalize} disabled={saving} className="flex-1 py-2.5 bg-[#2DB89A] text-white rounded-xl font-medium text-sm hover:bg-[#1A8F78] transition-colors disabled:opacity-50">
+                  <button onClick={handleFinalize} disabled={saving} className="flex-1 py-2.5 bg-[var(--accent-green)] text-white rounded-xl font-medium text-sm hover:opacity-90 transition-colors disabled:opacity-50">
                     {saving ? "Finalizing..." : "Confirm"}
                   </button>
-                  <button onClick={() => setShowFinalizeConfirm(false)} className="flex-1 py-2.5 bg-[#F5F3EF] text-[#888] rounded-xl font-medium text-sm hover:bg-[#E8E5DF] transition-colors">
+                  <button onClick={() => setShowFinalizeConfirm(false)} className="flex-1 py-2.5 bg-[var(--chip)] text-[var(--text-muted)] rounded-xl font-medium text-sm hover:bg-[var(--border)] transition-colors">
                     Cancel
                   </button>
                 </div>
@@ -620,12 +765,12 @@ function RecordPanel({ mode, record, incomeSource, onClose, onSave }: {
 
   return (
     <>
-      <div className="fixed inset-0 bg-black/20 z-40" onClick={onClose} />
-      <div className="fixed right-0 top-0 bottom-0 w-[420px] bg-white shadow-xl z-50 overflow-y-auto animate-slide-in">
+      <div className="fixed inset-0 bg-[var(--scrim)] z-40" onClick={onClose} />
+      <div className="fixed right-0 top-0 bottom-0 w-[420px] bg-[var(--surface)] shadow-xl z-50 overflow-y-auto animate-slide-in">
         <div className="p-6">
           <div className="flex items-center justify-between mb-6">
             <h2 className="text-lg font-bold" style={{ fontFamily: "var(--font-heading)" }}>{isAdd ? "Add Record" : "Edit Record"}</h2>
-            <button onClick={onClose} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[#F5F3EF] text-[#999] transition-colors">
+            <button onClick={onClose} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[var(--chip)] text-[var(--text-muted)] transition-colors">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
               </svg>
@@ -634,75 +779,306 @@ function RecordPanel({ mode, record, incomeSource, onClose, onSave }: {
 
           <div className="grid grid-cols-2 gap-4 mb-6">
             <div>
-              <label className="text-xs text-[#999] mb-1 block">Year</label>
-              <input type="number" value={form.year} onChange={(e) => update("year", e.target.value)} className="w-full px-3 py-2 rounded-xl bg-[#F8F6F2] text-sm outline-none border-none" />
+              <label className="text-xs text-[var(--text-muted)] mb-1 block">Year</label>
+              <input type="number" value={form.year} onChange={(e) => update("year", e.target.value)} className="w-full px-3 py-2 rounded-xl bg-[var(--input-bg)] text-sm outline-none border-none" />
             </div>
             <div>
-              <label className="text-xs text-[#999] mb-1 block">Month</label>
-              <select value={form.month} onChange={(e) => update("month", e.target.value)} className="w-full px-3 py-2 rounded-xl bg-[#F8F6F2] text-sm outline-none border-none">
+              <label className="text-xs text-[var(--text-muted)] mb-1 block">Month</label>
+              <select value={form.month} onChange={(e) => update("month", e.target.value)} className="w-full px-3 py-2 rounded-xl bg-[var(--input-bg)] text-sm outline-none border-none">
                 {monthNames.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
               </select>
             </div>
           </div>
 
           <div className="mb-5">
-            <h3 className="text-xs font-semibold text-[#999] uppercase tracking-wide mb-2" style={{ fontFamily: "var(--font-heading)" }}>Assets &amp; Liabilities</h3>
+            <h3 className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wide mb-2" style={{ fontFamily: "var(--font-heading)" }}>Assets &amp; Liabilities</h3>
             <div className="mb-2">
-              <label className="text-xs text-[#888] mb-1 block">Total Assets (USD)</label>
-              <input type="number" value={form.assets} onChange={(e) => update("assets", e.target.value)} className="w-full px-3 py-2 rounded-xl bg-[#F8F6F2] text-sm outline-none border-none" />
+              <label className="text-xs text-[var(--text-muted)] mb-1 block">Total Assets (USD)</label>
+              <input type="number" value={form.assets} onChange={(e) => update("assets", e.target.value)} className="w-full px-3 py-2 rounded-xl bg-[var(--input-bg)] text-sm outline-none border-none" />
             </div>
             <div className="mb-2">
-              <label className="text-xs text-[#888] mb-1 block">Total Liabilities (USD)</label>
-              <input type="number" value={form.liabilities} onChange={(e) => update("liabilities", e.target.value)} className="w-full px-3 py-2 rounded-xl bg-[#F8F6F2] text-sm outline-none border-none" />
+              <label className="text-xs text-[var(--text-muted)] mb-1 block">Total Liabilities (USD)</label>
+              <input type="number" value={form.liabilities} onChange={(e) => update("liabilities", e.target.value)} className="w-full px-3 py-2 rounded-xl bg-[var(--input-bg)] text-sm outline-none border-none" />
             </div>
           </div>
 
           <div className="mb-5">
-            <h3 className="text-xs font-semibold text-[#999] uppercase tracking-wide mb-2" style={{ fontFamily: "var(--font-heading)" }}>Income by Source</h3>
+            <h3 className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wide mb-2" style={{ fontFamily: "var(--font-heading)" }}>Income by Source</h3>
             <div className="mb-2">
-              <label className="text-xs text-[#888] mb-1 block">Kufar</label>
-              <input type="number" value={form.kufar} onChange={(e) => update("kufar", e.target.value)} className="w-full px-3 py-2 rounded-xl bg-[#F8F6F2] text-sm outline-none border-none" />
+              <label className="text-xs text-[var(--text-muted)] mb-1 block">Kufar</label>
+              <input type="number" value={form.kufar} onChange={(e) => update("kufar", e.target.value)} className="w-full px-3 py-2 rounded-xl bg-[var(--input-bg)] text-sm outline-none border-none" />
             </div>
             <div className="mb-2">
-              <label className="text-xs text-[#888] mb-1 block">TokMedia</label>
-              <input type="number" value={form.tokmedia} onChange={(e) => update("tokmedia", e.target.value)} className="w-full px-3 py-2 rounded-xl bg-[#F8F6F2] text-sm outline-none border-none" />
+              <label className="text-xs text-[var(--text-muted)] mb-1 block">TokMedia</label>
+              <input type="number" value={form.tokmedia} onChange={(e) => update("tokmedia", e.target.value)} className="w-full px-3 py-2 rounded-xl bg-[var(--input-bg)] text-sm outline-none border-none" />
             </div>
             <div className="mb-2">
-              <label className="text-xs text-[#888] mb-1 block">Other</label>
-              <input type="number" value={form.other} onChange={(e) => update("other", e.target.value)} className="w-full px-3 py-2 rounded-xl bg-[#F8F6F2] text-sm outline-none border-none" />
+              <label className="text-xs text-[var(--text-muted)] mb-1 block">Other</label>
+              <input type="number" value={form.other} onChange={(e) => update("other", e.target.value)} className="w-full px-3 py-2 rounded-xl bg-[var(--input-bg)] text-sm outline-none border-none" />
             </div>
           </div>
 
           {/* Total Income — read-only */}
           <div className="mb-5">
-            <label className="text-xs text-[#888] mb-1 block">Total Income (auto-calculated)</label>
-            <input type="text" value={`$${totalIncome.toLocaleString()}`} readOnly className="w-full px-3 py-2 rounded-xl bg-[#F0EDE8] text-sm outline-none border-none text-[#999] cursor-not-allowed" />
+            <label className="text-xs text-[var(--text-muted)] mb-1 block">Total Income (auto-calculated)</label>
+            <input type="text" value={`$${totalIncome.toLocaleString()}`} readOnly className="w-full px-3 py-2 rounded-xl bg-[var(--surface-sunken)] text-sm outline-none border-none text-[var(--text-muted)] cursor-not-allowed" />
           </div>
 
           {/* Expense Adjustment */}
           <div className="mb-5">
-            <h3 className="text-xs font-semibold text-[#999] uppercase tracking-wide mb-1" style={{ fontFamily: "var(--font-heading)" }}>Expense Adjustment</h3>
+            <h3 className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wide mb-1" style={{ fontFamily: "var(--font-heading)" }}>Expense Adjustment</h3>
             <div className="flex gap-2 mb-2">
               <button
                 onClick={() => setForm((f) => ({ ...f, adjDirection: "reduce" as const }))}
-                className={`flex-1 py-1.5 rounded-lg text-xs font-medium transition-all ${form.adjDirection === "reduce" ? "bg-[#0D9B7A] text-white" : "bg-[#F5F3EF] text-[#888]"}`}
+                className={`flex-1 py-1.5 rounded-lg text-xs font-medium transition-all ${form.adjDirection === "reduce" ? "bg-[var(--accent-green-strong)] text-white" : "bg-[var(--chip)] text-[var(--text-muted)]"}`}
               >
                 Reduce expenses
               </button>
               <button
                 onClick={() => setForm((f) => ({ ...f, adjDirection: "add" as const }))}
-                className={`flex-1 py-1.5 rounded-lg text-xs font-medium transition-all ${form.adjDirection === "add" ? "bg-[#DC2626] text-white" : "bg-[#F5F3EF] text-[#888]"}`}
+                className={`flex-1 py-1.5 rounded-lg text-xs font-medium transition-all ${form.adjDirection === "add" ? "bg-[var(--accent-red)] text-white" : "bg-[var(--chip)] text-[var(--text-muted)]"}`}
               >
                 Add to expenses
               </button>
             </div>
-            <input type="number" value={form.adjAmount || ""} onChange={(e) => setForm((f) => ({ ...f, adjAmount: e.target.value === "" ? 0 : Math.abs(Number(e.target.value)) }))} placeholder="0" className="w-full px-3 py-2 rounded-xl bg-[#F8F6F2] text-sm outline-none border-none" />
-            <p className="text-[10px] text-[#bbb] mt-1">Use this for non-expense outflows (deposits, investments) or missed expenses</p>
+            <input type="number" value={form.adjAmount || ""} onChange={(e) => setForm((f) => ({ ...f, adjAmount: e.target.value === "" ? 0 : Math.abs(Number(e.target.value)) }))} placeholder="0" className="w-full px-3 py-2 rounded-xl bg-[var(--input-bg)] text-sm outline-none border-none" />
+            <p className="text-[10px] text-[var(--text-faint)] mt-1">Use this for non-expense outflows (deposits, investments) or missed expenses</p>
           </div>
 
-          <button onClick={handleSave} disabled={saving} className="w-full py-3 bg-[#1a1a1a] text-white rounded-xl font-medium text-sm hover:bg-[#333] transition-colors disabled:opacity-50">
+          <button onClick={handleSave} disabled={saving} className="w-full py-3 bg-[var(--text)] text-[var(--bg)] rounded-xl font-medium text-sm hover:opacity-90 transition-colors disabled:opacity-50">
             {saving ? "Saving..." : isAdd ? "Add Record" : "Save"}
           </button>
+        </div>
+      </div>
+
+      <style jsx>{`
+        @keyframes slide-in { from { transform: translateX(100%); } to { transform: translateX(0); } }
+        .animate-slide-in { animation: slide-in 0.25s ease-out; }
+      `}</style>
+    </>
+  );
+}
+
+/* ── Income Transaction Group Rows ── */
+function IncomeGroupRows({ label, txs, total, onEdit, onDelete }: {
+  label: string;
+  txs: IncomeTransaction[];
+  total: number;
+  onEdit: (tx: IncomeTransaction) => void;
+  onDelete: (id: number) => void;
+}) {
+  return (
+    <>
+      <tr>
+        <td
+          colSpan={7}
+          className="px-4 py-2"
+          style={{ backgroundColor: "var(--surface-sunken)", borderBottom: "2px solid var(--border-strong)" }}
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold tracking-wide uppercase" style={{ fontFamily: "var(--font-heading)", color: "var(--text-muted)" }}>
+              {label}
+            </span>
+            <span className="text-xs font-semibold" style={{ color: "var(--accent-green-strong)" }}>
+              ${Math.round(total).toLocaleString()}
+            </span>
+          </div>
+        </td>
+      </tr>
+      {txs.map((tx, idx) => (
+        <tr
+          key={tx.id}
+          className="cursor-pointer transition-colors"
+          style={{ backgroundColor: idx % 2 === 0 ? "var(--surface)" : "var(--surface-2)" }}
+          onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "var(--surface-sunken)"; }}
+          onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = idx % 2 === 0 ? "var(--surface)" : "var(--surface-2)"; }}
+          onClick={() => onEdit(tx)}
+        >
+          <td className="px-4 py-2.5 whitespace-nowrap" style={{ borderBottom: "1px solid var(--border)", borderRight: "1px solid var(--border)", color: "var(--text-secondary)" }}>
+            {new Date(tx.date + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+          </td>
+          <td className="px-4 py-2.5 whitespace-nowrap font-medium" style={{ borderBottom: "1px solid var(--border)", borderRight: "1px solid var(--border)", color: "var(--text-secondary)" }}>
+            {tx.source}
+          </td>
+          <td className="px-4 py-2.5 whitespace-nowrap" style={{ borderBottom: "1px solid var(--border)", borderRight: "1px solid var(--border)", color: "var(--text-muted)" }}>
+            {tx.currency}
+          </td>
+          <td className="px-4 py-2.5 whitespace-nowrap" style={{ borderBottom: "1px solid var(--border)", borderRight: "1px solid var(--border)", color: "var(--text-secondary)" }}>
+            {tx.currency === "USD" ? "$" : tx.currency === "EUR" ? "\u20AC" : tx.currency === "PLN" ? "z\u0142" : ""}{tx.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </td>
+          <td className="px-4 py-2.5 whitespace-nowrap font-medium" style={{ borderBottom: "1px solid var(--border)", borderRight: "1px solid var(--border)", color: "var(--accent-green-strong)" }}>
+            ${tx.usd_amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </td>
+          <td className="px-4 py-2.5 whitespace-nowrap text-[var(--text-muted)] text-xs" style={{ borderBottom: "1px solid var(--border)", borderRight: "1px solid var(--border)", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis" }}>
+            {tx.notes || "\u2014"}
+          </td>
+          <td className="px-4 py-2.5 whitespace-nowrap text-center" style={{ borderBottom: "1px solid var(--border)" }}>
+            <button
+              onClick={(e) => { e.stopPropagation(); onDelete(tx.id); }}
+              className="text-[var(--text-faint)] hover:text-[var(--accent-red)] transition-colors"
+              title="Delete"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+              </svg>
+            </button>
+          </td>
+        </tr>
+      ))}
+    </>
+  );
+}
+
+/* ── Income Transaction Side Panel (Add / Edit) ── */
+function IncomeTransactionPanel({ mode, tx, existingSources, plnUsdRate, usdEurRate, bynUsdRate, onClose, onSave }: {
+  mode: "add" | "edit";
+  tx?: IncomeTransaction;
+  existingSources: string[];
+  plnUsdRate: number;
+  usdEurRate: number;
+  bynUsdRate: number;
+  onClose: () => void;
+  onSave: (data: { date: string; source: string; currency: string; amount: number; exchange_rate: number; usd_amount: number; notes?: string }) => Promise<void>;
+}) {
+  const today = new Date().toISOString().slice(0, 10);
+  const [form, setForm] = useState({
+    date: tx?.date ?? today,
+    source: tx?.source ?? "",
+    currency: tx?.currency ?? "USD",
+    amount: tx?.amount ?? 0,
+    exchange_rate: tx?.exchange_rate ?? 1,
+    notes: tx?.notes ?? "",
+  });
+  const [saving, setSaving] = useState(false);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+
+  const getDefaultRate = (currency: string) => {
+    switch (currency) {
+      case "USD": return 1;
+      case "PLN": return plnUsdRate;
+      case "EUR": return 1 / usdEurRate;
+      case "BYN": return 1 / bynUsdRate;
+      default: return 1;
+    }
+  };
+
+  const handleCurrencyChange = (currency: string) => {
+    const rate = getDefaultRate(currency);
+    setForm((f) => ({ ...f, currency, exchange_rate: rate }));
+  };
+
+  const usdAmount = form.currency === "USD"
+    ? form.amount
+    : form.amount / form.exchange_rate;
+
+  const handleSave = async () => {
+    if (!form.source.trim()) return;
+    setSaving(true);
+    try {
+      await onSave({
+        date: form.date,
+        source: form.source.trim(),
+        currency: form.currency,
+        amount: form.amount,
+        exchange_rate: Number(form.exchange_rate.toFixed(4)),
+        usd_amount: Number(usdAmount.toFixed(2)),
+        notes: form.notes.trim() || undefined,
+      });
+      onClose();
+    } catch {
+      // stay open
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const filteredSuggestions = existingSources.filter(
+    (s) => s.toLowerCase().includes(form.source.toLowerCase()) && s.toLowerCase() !== form.source.toLowerCase()
+  );
+
+  return (
+    <>
+      <div className="fixed inset-0 bg-[var(--scrim)] z-40" onClick={onClose} />
+      <div className="fixed right-0 top-0 bottom-0 w-[420px] bg-[var(--surface)] shadow-xl z-50 overflow-y-auto animate-slide-in">
+        <div className="p-6">
+          <div className="flex items-center justify-between mb-6">
+            <h2 className="text-lg font-bold" style={{ fontFamily: "var(--font-heading)" }}>
+              {mode === "add" ? "Add Income" : "Edit Income"}
+            </h2>
+            <button onClick={onClose} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[var(--chip)] text-[var(--text-muted)] transition-colors">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
+          </div>
+
+          <div className="mb-4">
+            <label className="text-xs text-[var(--text-muted)] mb-1 block">Date</label>
+            <input type="date" value={form.date} onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))} className="w-full px-3 py-2 rounded-xl bg-[var(--input-bg)] text-sm outline-none border-none" />
+          </div>
+
+          <div className="mb-4 relative">
+            <label className="text-xs text-[var(--text-muted)] mb-1 block">Source</label>
+            <input
+              type="text" value={form.source}
+              onChange={(e) => { setForm((f) => ({ ...f, source: e.target.value })); setShowSuggestions(true); }}
+              onFocus={() => setShowSuggestions(true)}
+              onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
+              placeholder="e.g. Kufar, TokMedia, Interest..."
+              className="w-full px-3 py-2 rounded-xl bg-[var(--input-bg)] text-sm outline-none border-none"
+            />
+            {showSuggestions && filteredSuggestions.length > 0 && (
+              <div className="absolute top-full left-0 right-0 mt-1 bg-[var(--surface)] rounded-xl shadow-lg border border-[var(--border)] z-10 max-h-32 overflow-y-auto">
+                {filteredSuggestions.map((s) => (
+                  <button key={s} className="w-full text-left px-3 py-2 text-sm hover:bg-[var(--chip)] transition-colors"
+                    onMouseDown={() => { setForm((f) => ({ ...f, source: s })); setShowSuggestions(false); }}>
+                    {s}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="mb-4">
+            <label className="text-xs text-[var(--text-muted)] mb-1 block">Currency</label>
+            <select value={form.currency} onChange={(e) => handleCurrencyChange(e.target.value)} className="w-full px-3 py-2 rounded-xl bg-[var(--input-bg)] text-sm outline-none border-none">
+              <option value="USD">USD</option>
+              <option value="PLN">PLN</option>
+              <option value="EUR">EUR</option>
+              <option value="BYN">BYN</option>
+            </select>
+          </div>
+
+          <div className="mb-4">
+            <label className="text-xs text-[var(--text-muted)] mb-1 block">Amount ({form.currency})</label>
+            <input type="number" step="0.01" value={form.amount || ""} onChange={(e) => setForm((f) => ({ ...f, amount: e.target.value === "" ? 0 : Number(e.target.value) }))} className="w-full px-3 py-2 rounded-xl bg-[var(--input-bg)] text-sm outline-none border-none" />
+          </div>
+
+          {form.currency !== "USD" && (
+            <div className="mb-4">
+              <label className="text-xs text-[var(--text-muted)] mb-1 block">Exchange Rate (1 {form.currency} = ? USD)</label>
+              <input type="number" step="0.0001" value={form.exchange_rate || ""} onChange={(e) => setForm((f) => ({ ...f, exchange_rate: e.target.value === "" ? 0 : Number(e.target.value) }))} className="w-full px-3 py-2 rounded-xl bg-[var(--input-bg)] text-sm outline-none border-none" />
+            </div>
+          )}
+
+          <div className="mb-4">
+            <label className="text-xs text-[var(--text-muted)] mb-1 block">USD Amount (auto-calculated)</label>
+            <input type="text" value={`$${usdAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`} readOnly className="w-full px-3 py-2 rounded-xl bg-[var(--surface-sunken)] text-sm outline-none border-none text-[var(--text-muted)] cursor-not-allowed" />
+          </div>
+
+          <div className="mb-6">
+            <label className="text-xs text-[var(--text-muted)] mb-1 block">Notes (optional)</label>
+            <textarea value={form.notes} onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))} rows={2} className="w-full px-3 py-2 rounded-xl bg-[var(--input-bg)] text-sm outline-none border-none resize-none" />
+          </div>
+
+          <div className="flex gap-3">
+            <button onClick={handleSave} disabled={saving || !form.source.trim()} className="flex-1 py-3 bg-[var(--accent-green)] text-white rounded-xl font-medium text-sm hover:opacity-90 transition-colors disabled:opacity-50">
+              {saving ? "Saving..." : "Save"}
+            </button>
+            <button onClick={onClose} className="flex-1 py-3 border-2 border-[var(--border)] text-[var(--text-muted)] rounded-xl font-medium text-sm hover:bg-[var(--chip)] transition-colors">
+              Cancel
+            </button>
+          </div>
         </div>
       </div>
 

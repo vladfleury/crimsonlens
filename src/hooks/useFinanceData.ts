@@ -3,6 +3,10 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import {
   fetchAssetsLiabilities, fetchIncomeData, fetchAccounts, fetchDebts, fetchSettings,
+  fetchIncomeTransactions,
+  insertIncomeTransaction as apiInsertIncomeTx,
+  updateIncomeTransaction as apiUpdateIncomeTx,
+  deleteIncomeTransaction as apiDeleteIncomeTx,
   updateDebtPaid as apiUpdateDebtPaid,
   updateAccount as apiUpdateAccount,
   updateSetting as apiUpdateSetting,
@@ -12,6 +16,7 @@ import {
   deleteAccount as apiDeleteAccount,
   updateAccountFull as apiUpdateAccountFull,
   type AssetsLiabilitiesRow, type IncomeDataRow, type AccountRow, type DebtRow, type SettingRow,
+  type IncomeTransaction,
 } from "@/lib/data";
 
 // ── Derived record type (client-side computed) ──
@@ -44,10 +49,21 @@ export interface IncomeSourceRecord {
   other: number;
 }
 
+export interface MonthlyIncomeAgg {
+  year: number;
+  month: number; // 1-indexed
+  date: string; // last day of month "YYYY-MM-DD"
+  total: number; // USD total
+  bySource: Record<string, number>; // e.g. { Kufar: 1580, TokMedia: 4026 }
+  expenseAdjustment: number;
+}
+
 export interface UseFinanceDataReturn {
   // Raw data
   monthlyRecords: MonthlyRecord[];
   incomeBySource: IncomeSourceRecord[];
+  incomeTransactions: IncomeTransaction[];
+  monthlyIncomeAgg: MonthlyIncomeAgg[];
   accounts: AccountRow[];
   debts: DebtRow[];
   settings: SettingRow[];
@@ -69,12 +85,17 @@ export interface UseFinanceDataReturn {
   upsertRecord: (al: Omit<AssetsLiabilitiesRow, "id">, inc: Omit<IncomeDataRow, "id">) => Promise<void>;
   upsertIncomeOnly: (inc: Omit<IncomeDataRow, "id">) => Promise<void>;
   upsertExpenseAdjustment: (date: string, year: number, amount: number) => Promise<void>;
+  insertIncomeTx: (tx: Parameters<typeof apiInsertIncomeTx>[0]) => Promise<void>;
+  updateIncomeTx: (id: number, tx: Parameters<typeof apiUpdateIncomeTx>[1]) => Promise<void>;
+  deleteIncomeTx: (id: number) => Promise<void>;
   insertAccount: (row: Omit<AccountRow, "id">) => Promise<AccountRow>;
   deleteAccount: (id: number) => Promise<void>;
   setPlnUsdRate: (v: number) => void;
   setBynUsdRate: (v: number) => void;
   setUsdEurRate: (v: number) => void;
   refetch: () => Promise<void>;
+  refreshExchangeRates: () => Promise<void>;
+  exchangeRatesUpdatedAt: number | null;
 }
 
 const MONTH_NAMES_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -90,6 +111,7 @@ export function useFinanceData(): UseFinanceDataReturn {
   // Raw Supabase data
   const [alRows, setAlRows] = useState<AssetsLiabilitiesRow[]>([]);
   const [incomeRows, setIncomeRows] = useState<IncomeDataRow[]>([]);
+  const [incomeTxRows, setIncomeTxRows] = useState<IncomeTransaction[]>([]);
   const [accountRows, setAccountRows] = useState<AccountRow[]>([]);
   const [debtRows, setDebtRows] = useState<DebtRow[]>([]);
   const [settingRows, setSettingRows] = useState<SettingRow[]>([]);
@@ -101,7 +123,80 @@ export function useFinanceData(): UseFinanceDataReturn {
 
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [exchangeRatesUpdatedAt, setExchangeRatesUpdatedAt] = useState<number | null>(null);
 
+  // ── Fetch live exchange rates ──
+  // Primary source: Google Finance, proxied through our /api/fx route (server-side
+  //   scrape, avoids CORS, returns "TARGET per 1 USD" for PLN, EUR, BYN).
+  // Fallback: Frankfurter (ECB daily ref rates) for PLN+EUR, NBRB for BYN.
+  // Polling more frequently than the source updates is harmless.
+  const refreshExchangeRates = useCallback(async () => {
+    let pln: number | null = null;
+    let eurPerUsd: number | null = null; // EUR per 1 USD (we invert for usdEurRate)
+    let byn: number | null = null;
+
+    // Try Google first
+    try {
+      const res = await fetch("/api/fx", { cache: "no-store" });
+      if (res.ok) {
+        const data = await res.json();
+        if (typeof data?.rates?.PLN === "number" && data.rates.PLN > 0) pln = data.rates.PLN;
+        if (typeof data?.rates?.EUR === "number" && data.rates.EUR > 0) eurPerUsd = data.rates.EUR;
+        if (typeof data?.rates?.BYN === "number" && data.rates.BYN > 0) byn = data.rates.BYN;
+      }
+    } catch {
+      // ignore, fall through to fallbacks
+    }
+
+    // Fallback: Frankfurter for PLN/EUR (only fill in what Google missed)
+    if (pln === null || eurPerUsd === null) {
+      try {
+        const res = await fetch("https://api.frankfurter.app/latest?from=USD&to=PLN,EUR", {
+          cache: "no-store",
+        });
+        if (res.ok) {
+          const fxData = await res.json();
+          if (pln === null && typeof fxData?.rates?.PLN === "number") pln = fxData.rates.PLN;
+          if (eurPerUsd === null && typeof fxData?.rates?.EUR === "number") eurPerUsd = fxData.rates.EUR;
+        }
+      } catch {
+        // keep current
+      }
+    }
+
+    // Fallback: NBRB for BYN
+    if (byn === null) {
+      try {
+        const res = await fetch("https://api.nbrb.by/exrates/rates/USD?parammode=2", {
+          cache: "no-store",
+        });
+        if (res.ok) {
+          const data = await res.json();
+          const rate = typeof data?.Cur_OfficialRate === "number" ? data.Cur_OfficialRate : null;
+          const scale = typeof data?.Cur_Scale === "number" && data.Cur_Scale > 0 ? data.Cur_Scale : 1;
+          if (rate !== null) byn = rate / scale;
+        }
+      } catch {
+        // keep current
+      }
+    }
+
+    let touched = false;
+    if (pln !== null) {
+      setPlnUsdRate(parseFloat(pln.toFixed(4)));
+      touched = true;
+    }
+    if (eurPerUsd !== null) {
+      // usdEurRate = USD per 1 EUR (display convention) = 1 / (EUR per 1 USD)
+      setUsdEurRate(parseFloat((1 / eurPerUsd).toFixed(4)));
+      touched = true;
+    }
+    if (byn !== null) {
+      setBynUsdRate(parseFloat(byn.toFixed(4)));
+      touched = true;
+    }
+    if (touched) setExchangeRatesUpdatedAt(Date.now());
+  }, []);
 
   // ── Fetch all data ──
   const fetchAll = useCallback(async () => {
@@ -109,45 +204,62 @@ export function useFinanceData(): UseFinanceDataReturn {
       setIsLoading(true);
       setError(null);
 
-      const [al, inc, acc, dbt, sett] = await Promise.all([
+      const [al, inc, acc, dbt, sett, inctx] = await Promise.all([
         fetchAssetsLiabilities(),
         fetchIncomeData(),
         fetchAccounts(),
         fetchDebts(),
         fetchSettings(),
+        fetchIncomeTransactions(),
       ]);
 
       setAlRows(al);
       setIncomeRows(inc);
+      setIncomeTxRows(inctx);
       setAccountRows(acc);
       setDebtRows(dbt);
       setSettingRows(sett);
 
-      // Get BYN rate from settings
+      // Seed BYN from settings as a fallback before the live fetch resolves
       const bynSetting = sett.find((s) => s.key === "usd_byn");
       if (bynSetting) {
         setBynUsdRate(parseFloat(bynSetting.value) || 2.9332);
       }
 
-      // Fetch live PLN and EUR rates from Frankfurter
-      try {
-        const res = await fetch("https://api.frankfurter.app/latest?from=USD&to=PLN,EUR");
-        const fxData = await res.json();
-        if (fxData.rates?.PLN) setPlnUsdRate(parseFloat(fxData.rates.PLN.toFixed(4)));
-        if (fxData.rates?.EUR) setUsdEurRate(parseFloat((1 / fxData.rates.EUR).toFixed(4)));
-      } catch {
-        // Keep defaults
-      }
+      await refreshExchangeRates();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load data");
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [refreshExchangeRates]);
 
   useEffect(() => {
     fetchAll();
   }, [fetchAll]);
+
+  // ── Auto-refresh exchange rates every 60s, plus when the tab regains focus ──
+  useEffect(() => {
+    const POLL_MS = 60_000;
+    const id = setInterval(refreshExchangeRates, POLL_MS);
+    const onFocus = () => { refreshExchangeRates(); };
+    const onVisibility = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "visible") {
+        refreshExchangeRates();
+      }
+    };
+    if (typeof window !== "undefined") {
+      window.addEventListener("focus", onFocus);
+      document.addEventListener("visibilitychange", onVisibility);
+    }
+    return () => {
+      clearInterval(id);
+      if (typeof window !== "undefined") {
+        window.removeEventListener("focus", onFocus);
+        document.removeEventListener("visibilitychange", onVisibility);
+      }
+    };
+  }, [refreshExchangeRates]);
 
   // ── Compute virtual current-month assets from LIQUID accounts only ──
   const liveAssets = useMemo(() => {
@@ -174,9 +286,53 @@ export function useFinanceData(): UseFinanceDataReturn {
     return -total; // Liabilities are negative
   }, [debtRows, bynUsdRate]);
 
-  // ── Compute monthly records by joining assets_liabilities + income_data ──
+  // ── Aggregate income_transactions by month ──
+  const monthlyIncomeAgg = useMemo((): MonthlyIncomeAgg[] => {
+    const map = new Map<string, { year: number; month: number; total: number; bySource: Record<string, number> }>();
+    for (const tx of incomeTxRows) {
+      const d = new Date(tx.date + "T00:00:00");
+      const year = d.getFullYear();
+      const month = d.getMonth() + 1;
+      const key = `${year}-${month}`;
+      if (!map.has(key)) {
+        map.set(key, { year, month, total: 0, bySource: {} });
+      }
+      const agg = map.get(key)!;
+      agg.total += tx.usd_amount;
+      agg.bySource[tx.source] = (agg.bySource[tx.source] ?? 0) + tx.usd_amount;
+    }
+
+    // Also pull expense_adjustment from income_data (legacy) for each month
+    const adjMap = new Map<string, number>();
+    for (const r of incomeRows) {
+      const d = new Date(r.date + "T00:00:00");
+      const key = `${d.getFullYear()}-${d.getMonth() + 1}`;
+      if (r.expense_adjustment) adjMap.set(key, r.expense_adjustment);
+    }
+
+    return Array.from(map.entries())
+      .map(([, agg]) => ({
+        year: agg.year,
+        month: agg.month,
+        date: getLastDayOfMonth(agg.year, agg.month),
+        total: Math.round(agg.total),
+        bySource: Object.fromEntries(
+          Object.entries(agg.bySource).map(([k, v]) => [k, Math.round(v)])
+        ),
+        expenseAdjustment: adjMap.get(`${agg.year}-${agg.month}`) ?? 0,
+      }))
+      .sort((a, b) => a.date.localeCompare(b.date));
+  }, [incomeTxRows, incomeRows]);
+
+  // ── Compute monthly records by joining assets_liabilities + income (from transactions) ──
   const monthlyRecords = useMemo(() => {
-    // Build a map from date -> income data
+    // Build a map from date -> aggregated monthly income from income_transactions
+    const incomeAggMap = new Map<string, MonthlyIncomeAgg>();
+    for (const agg of monthlyIncomeAgg) {
+      incomeAggMap.set(agg.date, agg);
+    }
+
+    // Also keep legacy incomeMap for expense_adjustment fallback
     const incomeMap = new Map<string, IncomeDataRow>();
     for (const r of incomeRows) {
       incomeMap.set(r.date, r);
@@ -232,8 +388,10 @@ export function useFinanceData(): UseFinanceDataReturn {
       const month = d.getMonth() + 1;
       const label = `${MONTH_NAMES_SHORT[month - 1]} ${year}`;
 
-      const inc = incomeMap.get(al.date);
-      const totalIncome = inc ? inc.total : 0;
+      // Prefer income from income_transactions aggregation, fallback to legacy income_data
+      const incAgg = incomeAggMap.get(al.date);
+      const incLegacy = incomeMap.get(al.date);
+      const totalIncome = incAgg ? incAgg.total : (incLegacy ? incLegacy.total : 0);
 
       // Net worth
       const netWorth = al.assets + al.liabilities;
@@ -243,7 +401,7 @@ export function useFinanceData(): UseFinanceDataReturn {
 
       // Expenses = prev_net_worth + income - net_worth
       const rawExpenses = prevNW !== null ? prevNW + totalIncome - netWorth : 0;
-      const expenseAdjustment = inc?.expense_adjustment ?? 0;
+      const expenseAdjustment = incAgg?.expenseAdjustment ?? incLegacy?.expense_adjustment ?? 0;
       const adjustedExpenses = Math.max(0, rawExpenses - expenseAdjustment);
 
       // NW MoM
@@ -315,9 +473,9 @@ export function useFinanceData(): UseFinanceDataReturn {
 
     // Return in most-recent-first order (matching old mockData convention)
     return records.reverse();
-  }, [alRows, incomeRows, accountRows, liveAssets, liveLiabilities]);
+  }, [alRows, incomeRows, monthlyIncomeAgg, accountRows, liveAssets, liveLiabilities]);
 
-  // ── Compute income by source ──
+  // ── Compute income by source (legacy from income_data, kept for backward compat) ──
   const incomeBySource = useMemo(() => {
     return incomeRows.map((r) => {
       const d = new Date(r.date + "T00:00:00");
@@ -331,6 +489,7 @@ export function useFinanceData(): UseFinanceDataReturn {
       };
     });
   }, [incomeRows]);
+
 
   // ── Mutations ──
 
@@ -429,9 +588,26 @@ export function useFinanceData(): UseFinanceDataReturn {
     setAccountRows((prev) => prev.filter((a) => a.id !== id));
   }, []);
 
+  const insertIncomeTx = useCallback(async (tx: Parameters<typeof apiInsertIncomeTx>[0]) => {
+    await apiInsertIncomeTx(tx);
+    await fetchAll();
+  }, [fetchAll]);
+
+  const updateIncomeTx = useCallback(async (id: number, tx: Parameters<typeof apiUpdateIncomeTx>[1]) => {
+    await apiUpdateIncomeTx(id, tx);
+    await fetchAll();
+  }, [fetchAll]);
+
+  const deleteIncomeTx = useCallback(async (id: number) => {
+    await apiDeleteIncomeTx(id);
+    await fetchAll();
+  }, [fetchAll]);
+
   return {
     monthlyRecords,
     incomeBySource,
+    incomeTransactions: incomeTxRows,
+    monthlyIncomeAgg,
     accounts: accountRows,
     debts: debtRows,
     settings: settingRows,
@@ -447,11 +623,16 @@ export function useFinanceData(): UseFinanceDataReturn {
     upsertRecord,
     upsertIncomeOnly,
     upsertExpenseAdjustment,
+    insertIncomeTx,
+    updateIncomeTx,
+    deleteIncomeTx,
     insertAccount,
     deleteAccount,
     setPlnUsdRate,
     setBynUsdRate,
     setUsdEurRate,
     refetch: fetchAll,
+    refreshExchangeRates,
+    exchangeRatesUpdatedAt,
   };
 }

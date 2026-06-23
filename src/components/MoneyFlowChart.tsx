@@ -8,6 +8,7 @@ import {
   SankeyLink,
 } from "d3-sankey";
 import { useFinance } from "@/hooks/FinanceDataContext";
+import { useThemeColors } from "@/hooks/useThemeColors";
 
 type FlowYear = "2026" | "2025";
 
@@ -46,57 +47,92 @@ function fmt(v: number): string {
 
 export default function MoneyFlowChart() {
   const uid = useId();
+  const c = useThemeColors();
   const [yearFilter, setYearFilter] = useState<FlowYear>("2026");
-  const { monthlyRecords, incomeBySource } = useFinance();
+  const { monthlyRecords, monthlyIncomeAgg } = useFinance();
+
+  const isMobile = typeof window !== "undefined" && window.innerWidth < 640;
 
   const flowData = useMemo(() => {
     const year = Number(yearFilter);
-    const yearIncome = incomeBySource.filter((r) => r.year === year);
-    const kufar = yearIncome.reduce((s, r) => s + r.kufar, 0);
-    const tokMedia = yearIncome.reduce((s, r) => s + r.tokMedia, 0);
-    const other = yearIncome.reduce((s, r) => s + r.other, 0);
-    const totalIncome = kufar + tokMedia + other;
+
+    // Build source totals from monthly income aggregation (income_transactions)
+    const yearAgg = monthlyIncomeAgg.filter((a) => a.year === year);
+    const sourceTotals: Record<string, number> = {};
+    for (const agg of yearAgg) {
+      for (const [source, amount] of Object.entries(agg.bySource)) {
+        sourceTotals[source] = (sourceTotals[source] ?? 0) + amount;
+      }
+    }
+
+    const totalIncome = Object.values(sourceTotals).reduce((s, v) => s + v, 0);
+
+    // Group small sources (<5% of total) into "Other"
+    const threshold = totalIncome * 0.05;
+    const sources: Record<string, number> = {};
+    let otherTotal = 0;
+    for (const [source, amount] of Object.entries(sourceTotals)) {
+      if (amount < threshold && source !== "Other") {
+        otherTotal += amount;
+      } else {
+        sources[source] = amount;
+      }
+    }
+    if (otherTotal > 0) {
+      sources["Other"] = (sources["Other"] ?? 0) + otherTotal;
+    }
+
+    // Sort sources by amount descending; if empty, add a placeholder
+    let sortedSources = Object.entries(sources).sort(([, a], [, b]) => b - a);
+    if (sortedSources.length === 0) {
+      sortedSources = [["Income", 0]];
+    }
 
     const yearRecords = monthlyRecords.filter((r) => r.year === year);
     const expenses = yearRecords.reduce((s, r) => s + r.adjustedExpenses, 0);
     const debtRepayment = yearRecords.reduce((s, r) => s + r.debtRepayment, 0);
     const savings = Math.max(0, totalIncome - expenses - debtRepayment);
 
-    return { kufar, tokMedia, other, totalIncome, expenses, debtRepayment, savings };
-  }, [yearFilter, monthlyRecords, incomeBySource]);
+    return { sources: sortedSources, totalIncome, expenses, debtRepayment, savings };
+  }, [yearFilter, monthlyRecords, monthlyIncomeAgg]);
 
   const result = useMemo(() => {
-    const { kufar, tokMedia, other, totalIncome, expenses, debtRepayment, savings } = flowData;
+    const { sources, totalIncome, expenses, debtRepayment, savings } = flowData;
 
-    const nodes: NodeDef[] = [
-      { id: "tokMedia", label: "TokMedia", color: "#C9A9B8" },
-      { id: "kufar", label: "Kufar", color: "#D4C5A9" },
-    ];
-    if (other > 0) {
-      nodes.push({ id: "other", label: "Other", color: "#B8C9D4" });
-    }
+    // Color palette for dynamic sources
+    const sourceColors = c.sankeySources;
+
+    // On mobile use narrower side gutters so the scaled-down labels don't clip.
+    const margin = isMobile
+      ? { ...MARGIN, left: 70, right: 70 }
+      : MARGIN;
+
+    const nodes: NodeDef[] = sources.map(([name], i) => ({
+      id: `src_${name}`,
+      label: name,
+      color: sourceColors[i % sourceColors.length],
+    }));
     nodes.push(
-      { id: "totalIncome", label: "Total Income", color: "#E8D98E" },
-      { id: "expenses", label: "Expenses", color: "#D4C55A" },
-      { id: "savings", label: "Savings", color: "#7DD8C4" },
+      { id: "totalIncome", label: "Total Income", color: c.sankeyIncome },
+      { id: "expenses", label: "Expenses", color: c.sankeyExpense },
+      { id: "savings", label: "Savings", color: c.sankeySavings },
     );
     if (debtRepayment > 0) {
-      nodes.push({ id: "debtRepayment", label: "Debt Repayment", color: "#D4A07A" });
+      nodes.push({ id: "debtRepayment", label: "Debt Repayment", color: c.sankeyDebt });
     }
 
-    const links: { source: string; target: string; value: number; color: string }[] = [
-      { source: "tokMedia", target: "totalIncome", value: tokMedia, color: "#C9A9B8" },
-      { source: "kufar", target: "totalIncome", value: kufar || 1, color: "#D4C5A9" },
-    ];
-    if (other > 0) {
-      links.push({ source: "other", target: "totalIncome", value: other, color: "#B8C9D4" });
-    }
+    const links: { source: string; target: string; value: number; color: string }[] = sources.map(([name, amount], i) => ({
+      source: `src_${name}`,
+      target: "totalIncome",
+      value: amount || 1,
+      color: sourceColors[i % sourceColors.length],
+    }));
     links.push(
-      { source: "totalIncome", target: "expenses", value: expenses, color: "#D4C55A" },
-      { source: "totalIncome", target: "savings", value: savings || 1, color: "#7DD8C4" },
+      { source: "totalIncome", target: "expenses", value: expenses || 1, color: c.sankeyExpense },
+      { source: "totalIncome", target: "savings", value: savings || 1, color: c.sankeySavings },
     );
     if (debtRepayment > 0) {
-      links.push({ source: "totalIncome", target: "debtRepayment", value: debtRepayment, color: "#D4A07A" });
+      links.push({ source: "totalIncome", target: "debtRepayment", value: debtRepayment, color: c.sankeyDebt });
     }
 
     const generator = d3Sankey<NodeDef, Record<string, unknown>>()
@@ -105,15 +141,39 @@ export default function MoneyFlowChart() {
       .nodePadding(NODE_PAD)
       .nodeAlign(sankeyJustify)
       .extent([
-        [MARGIN.left, MARGIN.top],
-        [W - MARGIN.right, H - MARGIN.bottom],
+        [margin.left, margin.top],
+        [W - margin.right, H - margin.bottom],
       ]);
 
     return generator({
       nodes: nodes.map((n) => ({ ...n })),
       links: links.map((l) => ({ ...l })),
     });
-  }, [flowData]);
+  }, [flowData, c, isMobile]);
+
+  const years: FlowYear[] = ["2026", "2025"];
+
+  // If no real data, show empty state
+  if (flowData.totalIncome === 0 && flowData.expenses === 0) {
+    return (
+      <div className="glass-card rounded-2xl p-4 md:p-6">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-lg font-bold" style={{ fontFamily: "var(--font-heading)" }}>Money Flow</h2>
+          <div className="flex gap-1 bg-[var(--chip)] rounded-xl p-1">
+            {years.map((y) => (
+              <button key={y} onClick={() => setYearFilter(y)}
+                className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-all ${yearFilter === y ? "bg-[var(--text)] text-[var(--bg)] shadow-sm" : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]"}`}>
+                {y}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="flex items-center justify-center h-[200px] text-sm text-[var(--text-muted)]">
+          No income data for {yearFilter}
+        </div>
+      </div>
+    );
+  }
 
   // Build bands
   const nodeMap = new Map(result.nodes.map((n) => [(n as N).id, n as N]));
@@ -151,21 +211,20 @@ export default function MoneyFlowChart() {
   });
 
   const { totalIncome } = flowData;
-  const years: FlowYear[] = ["2026", "2025"];
 
   return (
-    <div className="bg-white rounded-2xl p-6 shadow-[0_1px_3px_rgba(0,0,0,0.04)]">
+    <div className="glass-card rounded-2xl p-4 md:p-6">
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-lg font-bold" style={{ fontFamily: "var(--font-heading)" }}>Money Flow</h2>
-        <div className="flex gap-1 bg-[#F5F3EF] rounded-xl p-1">
+        <div className="flex gap-1 bg-[var(--chip)] rounded-xl p-1">
           {years.map((y) => (
             <button
               key={y}
               onClick={() => setYearFilter(y)}
               className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-all ${
                 yearFilter === y
-                  ? "bg-[#1a1a1a] text-white shadow-sm"
-                  : "text-[#888] hover:text-[#555]"
+                  ? "bg-[var(--text)] text-[var(--bg)] shadow-sm"
+                  : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
               }`}
             >
               {y}
@@ -174,7 +233,7 @@ export default function MoneyFlowChart() {
         </div>
       </div>
 
-      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ maxHeight: H }}>
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" overflow="visible" style={{ maxHeight: H, overflow: "visible" }}>
         <defs>
           {bands.map((b, i) => {
             const src = nodeMap.get(b.srcId);
@@ -221,7 +280,8 @@ export default function MoneyFlowChart() {
           let labelX: number;
           let anchor: "start" | "end";
           if (isLeft) {
-            labelX = x0 - 14;
+            // Clamp so left-anchored labels never run past the left edge.
+            labelX = Math.max(8, x0 - 14);
             anchor = "end";
           } else {
             labelX = x1 + 14;
@@ -239,11 +299,28 @@ export default function MoneyFlowChart() {
             return (
               <g key={n.id}>
                 <rect x={x0} y={y0} width={x1 - x0} height={h} rx={2} fill={n.color} />
-                <rect x={pillX} y={pillY} width={pillW} height={pillH} rx={6} fill="white" fillOpacity={0.9} />
-                <text x={(x0 + x1) / 2} y={midY - 5} textAnchor="middle" fontSize={12} fontWeight={700} fill="#2c2c2c">
+                <rect x={pillX} y={pillY} width={pillW} height={pillH} rx={6} fill={c.surface} fillOpacity={0.9} />
+                <text x={(x0 + x1) / 2} y={midY - 5} textAnchor="middle" fontSize={12} fontWeight={700} fill={c.text}>
                   {n.label}
                 </text>
-                <text x={(x0 + x1) / 2} y={midY + 13} textAnchor="middle" fontSize={12} fontWeight={400} fill="#6b6560">
+                <text x={(x0 + x1) / 2} y={midY + 13} textAnchor="middle" fontSize={12} fontWeight={400} fill={c.textSub}>
+                  {fmt(value)}
+                </text>
+              </g>
+            );
+          }
+
+          if (isMobile) {
+            // Tighter two-line label (name + value) so it fits the scaled-down SVG.
+            return (
+              <g key={n.id}>
+                <rect x={x0} y={y0} width={x1 - x0} height={h} rx={2} fill={n.color} />
+                {/* Name */}
+                <text x={labelX} y={midY - 4} textAnchor={anchor} fontSize={11} fontWeight={600} fill={c.text}>
+                  {n.label}
+                </text>
+                {/* Value */}
+                <text x={labelX} y={midY + 10} textAnchor={anchor} fontSize={10} fontWeight={400} fill={c.textSub}>
                   {fmt(value)}
                 </text>
               </g>
@@ -254,15 +331,15 @@ export default function MoneyFlowChart() {
             <g key={n.id}>
               <rect x={x0} y={y0} width={x1 - x0} height={h} rx={2} fill={n.color} />
               {/* Percentage */}
-              <text x={labelX} y={midY - 14} textAnchor={anchor} fontSize={10} fontWeight={500} fill="#9c9890">
+              <text x={labelX} y={midY - 14} textAnchor={anchor} fontSize={10} fontWeight={500} fill={c.axis}>
                 ({pct}%)
               </text>
               {/* Name */}
-              <text x={labelX} y={midY + 1} textAnchor={anchor} fontSize={13} fontWeight={600} fill="#2c2c2c">
+              <text x={labelX} y={midY + 1} textAnchor={anchor} fontSize={13} fontWeight={600} fill={c.text}>
                 {n.label}
               </text>
               {/* Value */}
-              <text x={labelX} y={midY + 17} textAnchor={anchor} fontSize={12} fontWeight={400} fill="#6b6560">
+              <text x={labelX} y={midY + 17} textAnchor={anchor} fontSize={12} fontWeight={400} fill={c.textSub}>
                 {fmt(value)}
               </text>
             </g>

@@ -192,3 +192,61 @@ export async function updateAccountFull(id: number, updates: Partial<Omit<Accoun
     .eq("id", id);
   if (error) throw error;
 }
+
+// ── Income Transactions (new schema) ──
+
+export interface IncomeTransaction {
+  id: number;
+  date: string;
+  source: string;
+  currency: string;
+  amount: number;
+  exchange_rate: number;
+  usd_amount: number;
+  notes?: string | null;
+  created_at?: string;
+}
+
+export async function fetchIncomeTransactions(): Promise<IncomeTransaction[]> {
+  const { data, error } = await supabase
+    .from("income_transactions")
+    .select("*")
+    .order("date", { ascending: false });
+  if (error) throw error;
+  return data ?? [];
+}
+
+export async function insertIncomeTransaction(tx: {
+  date: string;
+  source: string;
+  currency: string;
+  amount: number;
+  exchange_rate: number;
+  usd_amount: number;
+  notes?: string;
+}) {
+  const { data, error } = await supabase
+    .from("income_transactions")
+    .insert(tx)
+    .select();
+  if (error) throw error;
+  return data;
+}
+
+export async function updateIncomeTransaction(id: number, tx: Partial<Omit<IncomeTransaction, "id" | "created_at">>) {
+  const { data, error } = await supabase
+    .from("income_transactions")
+    .update(tx)
+    .eq("id", id)
+    .select();
+  if (error) throw error;
+  return data;
+}
+
+export async function deleteIncomeTransaction(id: number) {
+  const { error } = await supabase
+    .from("income_transactions")
+    .delete()
+    .eq("id", id);
+  if (error) throw error;
+}
