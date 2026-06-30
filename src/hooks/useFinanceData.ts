@@ -8,6 +8,9 @@ import {
   updateIncomeTransaction as apiUpdateIncomeTx,
   deleteIncomeTransaction as apiDeleteIncomeTx,
   updateDebtPaid as apiUpdateDebtPaid,
+  insertDebt as apiInsertDebt,
+  updateDebt as apiUpdateDebt,
+  deleteDebt as apiDeleteDebt,
   updateAccount as apiUpdateAccount,
   updateSetting as apiUpdateSetting,
   upsertAssetsLiabilities as apiUpsertAL,
@@ -79,6 +82,9 @@ export interface UseFinanceDataReturn {
 
   // Mutations
   updateDebtPaid: (id: number, amount: number) => Promise<void>;
+  insertDebt: (row: Omit<DebtRow, "id">) => Promise<DebtRow>;
+  updateDebt: (id: number, patch: Partial<Omit<DebtRow, "id">>) => Promise<void>;
+  deleteDebt: (id: number) => Promise<void>;
   updateAccount: (id: number, amount: number) => Promise<void>;
   updateAccountFull: (id: number, updates: Partial<Omit<AccountRow, "id">>) => Promise<void>;
   updateSetting: (key: string, value: string) => Promise<void>;
@@ -498,6 +504,27 @@ export function useFinanceData(): UseFinanceDataReturn {
     setDebtRows((prev) => prev.map((d) => d.id === id ? { ...d, amount_paid: amount } : d));
   }, []);
 
+  const insertDebt = useCallback(async (row: Omit<DebtRow, "id">) => {
+    const newDebt = await apiInsertDebt(row);
+    setDebtRows((prev) => [...prev, newDebt]);
+    return newDebt;
+  }, []);
+
+  const updateDebt = useCallback(async (id: number, patch: Partial<Omit<DebtRow, "id">>) => {
+    // Optimistic update for snappy inline editing; DB write is best-effort.
+    setDebtRows((prev) => prev.map((d) => d.id === id ? { ...d, ...patch } : d));
+    try {
+      await apiUpdateDebt(id, patch);
+    } catch {
+      /* keep optimistic value; refetch will reconcile */
+    }
+  }, []);
+
+  const deleteDebt = useCallback(async (id: number) => {
+    await apiDeleteDebt(id);
+    setDebtRows((prev) => prev.filter((d) => d.id !== id));
+  }, []);
+
   const updateAccount = useCallback(async (id: number, amount: number) => {
     await apiUpdateAccount(id, amount);
     setAccountRows((prev) => prev.map((a) => a.id === id ? { ...a, amount } : a));
@@ -617,6 +644,9 @@ export function useFinanceData(): UseFinanceDataReturn {
     isLoading,
     error,
     updateDebtPaid,
+    insertDebt,
+    updateDebt,
+    deleteDebt,
     updateAccount,
     updateAccountFull,
     updateSetting,

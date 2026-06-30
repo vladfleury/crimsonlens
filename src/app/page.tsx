@@ -14,6 +14,8 @@ import { formatCurrency, formatPercent, monthNames } from "@/data/mockData";
 
 type YearFilter = "all" | "2026" | "2025";
 
+const debtSymbols: Record<string, string> = { USD: "$", EUR: "€", PLN: "zł", BYN: "Br" };
+
 // Compact integer dollar formatter — e.g. $2,714 → "$2.7k", -6850 → "-$6.9k"
 function fmtCompact(n: number): string {
   const sign = n < 0 ? "-" : "";
@@ -32,7 +34,7 @@ export default function NetWorthPage() {
     monthlyRecords, accounts, debts, settings,
     plnUsdRate, bynUsdRate, usdEurRate,
     setPlnUsdRate, setBynUsdRate, setUsdEurRate,
-    updateDebtPaid, updateSetting,
+    updateSetting, insertDebt, updateDebt, deleteDebt,
     isLoading, error, refetch,
     refreshExchangeRates, exchangeRatesUpdatedAt,
   } = useFinance();
@@ -48,7 +50,6 @@ export default function NetWorthPage() {
 
   const grandmaPaid = grandmaDebt?.amount_paid ?? 0;
   const grandmaTotal = grandmaDebt?.total_amount ?? 0;
-  const grandmaApr = grandmaDebt?.apr ?? 0;
 
   const grandmaRemaining = grandmaTotal - grandmaPaid;
   const totalDebtUSD = Math.round(grandmaRemaining);
@@ -316,27 +317,23 @@ export default function NetWorthPage() {
   const maxChange = Math.max(...monthChangeBreakdown.map((b) => b.usdValue), 1);
   const changeBarColors = allocColors;
 
-  // Build debt cards data
-  const debtCards = [
-    ...(grandmaDebt ? [{
-      id: grandmaDebt.id,
-      name: grandmaDebt.name,
-      apr: grandmaApr,
-      currency: grandmaDebt.currency,
-      totalOwed: grandmaTotal,
-      paid: grandmaPaid,
-      symbol: "$",
-      remaining: grandmaRemaining,
-    }] : []),
-  ];
+  // ── Debt CRUD (writes ONLY to the debts table) ──
+  const handleDebtField = useCallback(
+    async (id: number, patch: Partial<{ name: string; currency: string; total_amount: number; amount_paid: number; apr: number }>) => {
+      try { await updateDebt(id, patch); } catch { /* optimistic */ }
+    },
+    [updateDebt]
+  );
 
-  const handleDebtPaidChange = useCallback(async (debtId: number, newPaid: number) => {
+  const handleDeleteDebt = useCallback(async (id: number) => {
+    try { await deleteDebt(id); } catch { /* handled */ }
+  }, [deleteDebt]);
+
+  const handleAddDebt = useCallback(async () => {
     try {
-      await updateDebtPaid(debtId, newPaid);
-    } catch {
-      // Error handled silently — optimistic update will fix on refetch
-    }
-  }, [updateDebtPaid]);
+      await insertDebt({ name: "New debt", currency: "USD", total_amount: 0, amount_paid: 0, apr: 0 });
+    } catch { /* handled */ }
+  }, [insertDebt]);
 
   const handleBynRateChange = useCallback(async (newRate: number) => {
     setBynUsdRate(newRate);
@@ -442,53 +439,24 @@ export default function NetWorthPage() {
             <div>
               <h2 className="text-lg font-bold mb-4" style={{ fontFamily: "var(--font-heading)" }}>Debt Analysis</h2>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {debtCards.map((debt) => {
-                  const progress = (debt.paid / debt.totalOwed) * 100;
-                  return (
-                    <div key={debt.name} className="glass-card rounded-2xl p-5">
-                      <div className="flex items-center justify-between mb-3">
-                        <h3 className="font-semibold text-sm" style={{ fontFamily: "var(--font-heading)" }}>{debt.name}</h3>
-                        <span className={`text-xs px-2 py-0.5 rounded-full ${debt.apr === 0 ? "bg-[var(--accent-green-soft-bg)] text-[var(--accent-green-strong)]" : "bg-[var(--accent-red-soft-bg)] text-[var(--accent-red-strong)]"}`}>{debt.apr}% APR</span>
-                      </div>
-                      <div className="space-y-1.5 text-sm">
-                        <div className="flex justify-between">
-                          <span className="text-[var(--text-muted)]">Total</span>
-                          <div className="text-right">
-                            <span className="font-medium text-[var(--text)]">{debt.symbol}{debt.totalOwed.toLocaleString()}</span>
-                          </div>
-                        </div>
-                        <div className="flex justify-between items-center">
-                          <span className="text-[var(--text-muted)]">Paid</span>
-                          <div className="flex items-center">
-                            <span className="text-[var(--accent-green-strong)] font-medium mr-0.5">{debt.symbol.trim()}</span>
-                            <input
-                              type="number"
-                              value={debt.paid}
-                              onChange={(e) => {
-                                const val = e.target.value === "" ? 0 : Number(e.target.value);
-                                handleDebtPaidChange(debt.id, val);
-                              }}
-                              className="w-20 text-right font-medium text-[var(--accent-green-strong)] bg-[var(--input-num-bg)] rounded px-1 border-none outline-none text-sm focus:bg-[var(--input-num-focus)] transition-colors"
-                              step="0.01"
-                            />
-                          </div>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-[var(--text-muted)]">Remaining</span>
-                          <div className="text-right">
-                            <span className="font-medium text-[var(--accent-red-strong)]">{debt.symbol}{debt.remaining.toLocaleString()}</span>
-                          </div>
-                        </div>
-                      </div>
-                      <div className="mt-3">
-                        <div className="w-full h-2 bg-[var(--chip)] rounded-full overflow-hidden">
-                          <div className="h-full rounded-full transition-all" style={{ width: `${progress}%`, backgroundColor: progress < 30 ? "var(--accent-red)" : progress < 80 ? "var(--accent-gold)" : "var(--accent-green)" }} />
-                        </div>
-                        <span className="text-[10px] text-[var(--text-muted)] mt-1 block">{formatPercent(progress)}</span>
-                      </div>
-                    </div>
-                  );
-                })}
+                {debts.map((debt) => (
+                  <DebtCard
+                    key={debt.id}
+                    debt={debt}
+                    symbol={debtSymbols[debt.currency] ?? "$"}
+                    onField={handleDebtField}
+                    onDelete={handleDeleteDebt}
+                  />
+                ))}
+                <button
+                  onClick={handleAddDebt}
+                  className="rounded-2xl p-5 flex flex-col items-center justify-center gap-1.5 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--surface-2)] transition-colors border-2 border-dashed border-[var(--border)] min-h-[150px]"
+                >
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+                  </svg>
+                  New debt
+                </button>
               </div>
             </div>
 
@@ -825,6 +793,115 @@ export default function NetWorthPage() {
         <div className="mb-8" />
       </div>
     </DashboardLayout>
+  );
+}
+
+/* ── Editable debt card (writes only to the debts table) ── */
+function DebtCard({
+  debt,
+  symbol,
+  onField,
+  onDelete,
+}: {
+  debt: { id: number; name: string; currency: string; total_amount: number; amount_paid: number; apr: number };
+  symbol: string;
+  onField: (id: number, patch: Partial<{ name: string; currency: string; total_amount: number; amount_paid: number; apr: number }>) => void;
+  onDelete: (id: number) => void;
+}) {
+  const [name, setName] = useState(debt.name);
+  useEffect(() => { setName(debt.name); }, [debt.name]);
+
+  const remaining = debt.total_amount - debt.amount_paid;
+  const progress = debt.total_amount > 0 ? (debt.amount_paid / debt.total_amount) * 100 : 0;
+  const numCls =
+    "text-right font-medium bg-[var(--input-num-bg)] rounded px-1.5 py-0.5 border-none outline-none text-sm focus:bg-[var(--input-num-focus)] transition-colors";
+
+  return (
+    <div className="glass-card rounded-2xl p-5">
+      <div className="flex items-center justify-between mb-3 gap-2">
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          onBlur={() => { const v = name.trim() || "Untitled"; if (v !== debt.name) onField(debt.id, { name: v }); }}
+          placeholder="Debt name"
+          className="font-semibold text-sm bg-transparent outline-none flex-1 min-w-0 text-[var(--text)] rounded px-1 -mx-1 focus:bg-[var(--input-bg)] transition-colors"
+          style={{ fontFamily: "var(--font-heading)" }}
+        />
+        <button
+          onClick={() => onDelete(debt.id)}
+          aria-label="Delete debt"
+          title="Delete debt"
+          className="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg text-[var(--text-faint)] hover:text-[var(--accent-red)] hover:bg-[var(--accent-red-soft-bg)] transition-colors"
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+          </svg>
+        </button>
+      </div>
+      <div className="space-y-1.5 text-sm">
+        <div className="flex justify-between items-center">
+          <span className="text-[var(--text-muted)]">Total</span>
+          <div className="flex items-center gap-1">
+            <select
+              value={debt.currency}
+              onChange={(e) => onField(debt.id, { currency: e.target.value })}
+              className="text-xs text-[var(--text-muted)] bg-transparent outline-none cursor-pointer hover:text-[var(--text-secondary)]"
+            >
+              <option value="USD">USD</option>
+              <option value="EUR">EUR</option>
+              <option value="PLN">PLN</option>
+              <option value="BYN">BYN</option>
+            </select>
+            <input
+              type="number"
+              step="0.01"
+              value={debt.total_amount}
+              onChange={(e) => onField(debt.id, { total_amount: e.target.value === "" ? 0 : Number(e.target.value) })}
+              className={`${numCls} w-24 text-[var(--text)]`}
+            />
+          </div>
+        </div>
+        <div className="flex justify-between items-center">
+          <span className="text-[var(--text-muted)]">Paid</span>
+          <div className="flex items-center">
+            <span className="text-[var(--accent-green-strong)] font-medium mr-0.5">{symbol}</span>
+            <input
+              type="number"
+              step="0.01"
+              value={debt.amount_paid}
+              onChange={(e) => onField(debt.id, { amount_paid: e.target.value === "" ? 0 : Number(e.target.value) })}
+              className={`${numCls} w-24 text-[var(--accent-green-strong)]`}
+            />
+          </div>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-[var(--text-muted)]">Remaining</span>
+          <span className="font-medium text-[var(--accent-red-strong)] tabular-nums">{symbol}{remaining.toLocaleString()}</span>
+        </div>
+        <div className="flex justify-between items-center">
+          <span className="text-[var(--text-muted)]">APR</span>
+          <div className="flex items-center">
+            <input
+              type="number"
+              step="0.1"
+              value={debt.apr}
+              onChange={(e) => onField(debt.id, { apr: e.target.value === "" ? 0 : Number(e.target.value) })}
+              className={`${numCls} w-14 text-[var(--text)]`}
+            />
+            <span className="text-[var(--text-muted)] ml-0.5">%</span>
+          </div>
+        </div>
+      </div>
+      <div className="mt-3">
+        <div className="w-full h-2 bg-[var(--chip)] rounded-full overflow-hidden">
+          <div
+            className="h-full rounded-full transition-all"
+            style={{ width: `${Math.min(100, Math.max(0, progress))}%`, backgroundColor: progress < 30 ? "var(--accent-red)" : progress < 80 ? "var(--accent-gold)" : "var(--accent-green)" }}
+          />
+        </div>
+        <span className="text-[10px] text-[var(--text-muted)] mt-1 block">{formatPercent(progress)}</span>
+      </div>
+    </div>
   );
 }
 

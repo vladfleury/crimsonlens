@@ -100,6 +100,32 @@ export async function updateDebtPaid(id: number, amount_paid: number) {
   if (error) throw error;
 }
 
+export async function insertDebt(row: Omit<DebtRow, "id">) {
+  const { data, error } = await supabase
+    .from("debts")
+    .insert(row)
+    .select()
+    .single();
+  if (error) throw error;
+  return data as DebtRow;
+}
+
+export async function updateDebt(id: number, patch: Partial<Omit<DebtRow, "id">>) {
+  const { error } = await supabase
+    .from("debts")
+    .update(patch)
+    .eq("id", id);
+  if (error) throw error;
+}
+
+export async function deleteDebt(id: number) {
+  const { error } = await supabase
+    .from("debts")
+    .delete()
+    .eq("id", id);
+  if (error) throw error;
+}
+
 export async function updateAccount(id: number, amount: number) {
   const { error } = await supabase
     .from("current_accounts")
