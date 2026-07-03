@@ -1,54 +1,34 @@
 "use client";
 
 import { useFinance } from "@/hooks/FinanceDataContext";
-import { formatCurrency, monthNames } from "@/data/mockData";
+import { formatCurrency } from "@/data/mockData";
 
-// ── Month Clock ──
-// A compact "this month at a glance" gauge. The ring is split into the month's
-// income (green) vs. burn/expense (red) share; the tick marks + hand + center
-// number track how far we are through the calendar month. Income/burn are
-// pulled from the live current-month record (same source the KPI cards use).
+// ── Month Clock — "Aurora Arc" ──
+// A luminous half-arc gauge sweeps the month's time progress (today of N days),
+// its gradient warming from income-green to a gold tip that previews the Net.
+// A 65/35-style split bar shows the income-vs-burn proportion, and two tinted
+// glass tiles carry the figures. Data comes from the live current-month record.
 // Colors use the theme CSS variables so it works in both light and dark.
 
-const CX = 120;
+const MONTHS = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+
+// Upper half-arc gauge geometry (viewBox 224 x 150).
+const CX = 112;
 const CY = 120;
-const RING_R = 90;
-const RING_W = 11;
-
-// 0° at 12 o'clock, increasing clockwise.
-function polar(r: number, angleDeg: number) {
-  const rad = (angleDeg * Math.PI) / 180;
-  return { x: CX + r * Math.sin(rad), y: CY - r * Math.cos(rad) };
-}
-
-function arcPath(r: number, startAngle: number, endAngle: number) {
-  const start = polar(r, startAngle);
-  const end = polar(r, endAngle);
-  const largeArc = endAngle - startAngle > 180 ? 1 : 0;
-  return `M ${start.x} ${start.y} A ${r} ${r} 0 ${largeArc} 1 ${end.x} ${end.y}`;
-}
-
-// Render one segment as either an arc (partial) or a full circle (~whole ring),
-// skipping it entirely when the share is negligible. The income and burn
-// segments share endpoints (no gap), so together they read as one continuous
-// two-tone ring; a hair of overlap keeps the seam clean against anti-aliasing.
-const SEAM_OVERLAP = 0.6; // degrees
-function Segment({ share, offsetDeg, color }: { share: number; offsetDeg: number; color: string }) {
-  if (share <= 0.0005) return null;
-  if (share >= 0.9995) {
-    return <circle cx={CX} cy={CY} r={RING_R} fill="none" stroke={color} strokeWidth={RING_W} />;
-  }
-  const start = offsetDeg - SEAM_OVERLAP;
-  const end = offsetDeg + share * 360 + SEAM_OVERLAP;
-  return (
-    <path d={arcPath(RING_R, start, end)} fill="none" stroke={color} strokeWidth={RING_W} />
-  );
+const R = 90;
+const A0 = Math.PI; // left end
+const A1 = 2 * Math.PI; // right end
+function pt(a: number): [number, number] {
+  return [CX + R * Math.cos(a), CY + R * Math.sin(a)];
 }
 
 export default function MonthClock() {
   const { monthlyRecords } = useFinance();
 
-  // Anchor to the current calendar month — that's what the clock represents.
+  // Anchor to the current calendar month.
   const now = new Date();
   const year = now.getFullYear();
   const month = now.getMonth() + 1; // 1-indexed
@@ -61,169 +41,154 @@ export default function MonthClock() {
   const net = income - burn;
 
   const total = income + burn;
-  const incomeShare = total > 0 ? income / total : 0;
-  const burnShare = total > 0 ? burn / total : 0;
+  const incShare = total > 0 ? income / total : 0;
+  const incPct = total > 0 ? Math.round(incShare * 100) : 0;
+  const burnPct = total > 0 ? 100 - incPct : 0;
+  const elapsedPct = Math.round((day / daysInMonth) * 100);
 
-  // Per-day figures use days elapsed so far this month.
   const incomePerDay = income / day;
   const burnPerDay = burn / day;
 
-  // Clock hand angle: fraction of the month elapsed.
-  const handAngle = (day / daysInMonth) * 360;
-  const hand = polar(58, handAngle);
-
-  // Day ticks around the face.
-  const ticks = Array.from({ length: daysInMonth }, (_, i) => {
-    const angle = (i / daysInMonth) * 360;
-    const outer = polar(110, angle);
-    const inner = polar(i % 5 === 0 ? 100 : 103, angle);
-    const elapsed = i < day;
-    return { i, outer, inner, elapsed };
-  });
+  // Gauge points: start (left), full-arc end (right), progress end (today).
+  const s = pt(A0);
+  const e = pt(A1);
+  const pe = pt(A0 + (A1 - A0) * (day / daysInMonth));
 
   return (
-    <div className="glass-card rounded-2xl p-5">
+    <div className="glass-card rounded-2xl p-5" style={{ position: "relative", overflow: "hidden" }}>
+      {/* Ambient green glow bleeding from the top */}
+      <div
+        style={{
+          position: "absolute",
+          top: -64,
+          left: "50%",
+          transform: "translateX(-50%)",
+          width: 240,
+          height: 240,
+          background:
+            "radial-gradient(circle, color-mix(in srgb, var(--accent-green) 20%, transparent), transparent 70%)",
+          pointerEvents: "none",
+        }}
+      />
+
       {/* Header */}
-      <div className="flex items-center justify-between mb-2">
-        <h3 className="text-sm font-bold text-[var(--text)]" style={{ fontFamily: "var(--font-heading)" }}>
-          Month Clock
-        </h3>
-        <span className="text-[10px] uppercase tracking-wider text-[var(--text-muted)]">
-          {monthNames[month - 1]} · Day {day}/{daysInMonth}
-        </span>
+      <div className="flex items-center justify-between" style={{ position: "relative" }}>
+        <div>
+          <div style={{ fontFamily: "var(--font-heading)", fontWeight: 700, fontSize: 15, color: "var(--text)", letterSpacing: "-0.2px" }}>
+            {MONTHS[month - 1]}
+          </div>
+          <div style={{ fontWeight: 500, fontSize: 10.5, color: "var(--text-faint)", letterSpacing: "0.4px", marginTop: 2 }}>
+            MONTH TO DATE
+          </div>
+        </div>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            background: "color-mix(in srgb, var(--accent-gold) 14%, transparent)",
+            border: "1px solid color-mix(in srgb, var(--accent-gold) 34%, transparent)",
+            borderRadius: 999,
+            padding: "5px 11px",
+          }}
+        >
+          <span style={{ fontWeight: 500, fontSize: 10, color: "var(--accent-gold-deep)", letterSpacing: "0.5px" }}>NET</span>
+          <span style={{ fontFamily: "var(--font-heading)", fontWeight: 700, fontSize: 13, color: "var(--accent-gold)" }}>
+            {formatCurrency(net, "$", true)}
+          </span>
+        </div>
       </div>
 
-      {/* Clock */}
-      <div className="flex justify-center py-1">
-        <svg viewBox="0 0 240 240" className="w-full" style={{ maxWidth: 240 }}>
-          {/* Ticks */}
-          {ticks.map((t) => (
-            <line
-              key={t.i}
-              x1={t.inner.x}
-              y1={t.inner.y}
-              x2={t.outer.x}
-              y2={t.outer.y}
-              stroke={t.elapsed ? "var(--text-faint)" : "var(--border-strong)"}
-              strokeWidth={t.i % 5 === 0 ? 1.75 : 1}
-              strokeLinecap="round"
-            />
-          ))}
-
-          {/* Track */}
-          <circle cx={CX} cy={CY} r={RING_R} fill="none" stroke="var(--border-strong)" strokeWidth={RING_W} />
-
-          {/* Income + burn arcs — one continuous two-tone ring starting at
-              12 o'clock. Burn drawn first, income on top so the seams stay clean
-              and green anchors the top. */}
-          <Segment share={burnShare} offsetDeg={incomeShare * 360} color="var(--accent-red)" />
-          <Segment share={incomeShare} offsetDeg={0} color="var(--accent-green)" />
-
-
-          {/* Hand */}
-          <line
-            x1={CX}
-            y1={CY}
-            x2={hand.x}
-            y2={hand.y}
-            stroke="var(--text-secondary)"
-            strokeWidth={2}
+      {/* Gauge */}
+      <div style={{ position: "relative", display: "flex", justifyContent: "center", margin: "10px 0 4px" }}>
+        <svg viewBox="0 0 224 150" width={224} height={150}>
+          <defs>
+            <linearGradient id="mcArc" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0" style={{ stopColor: "var(--accent-green-deep)" }} />
+              <stop offset="0.5" style={{ stopColor: "var(--accent-green-strong)" }} />
+              <stop offset="1" style={{ stopColor: "var(--accent-gold)" }} />
+            </linearGradient>
+            <filter id="mcGlow" x="-40%" y="-40%" width="180%" height="180%">
+              <feGaussianBlur stdDeviation="4" result="b" />
+              <feMerge>
+                <feMergeNode in="b" />
+                <feMergeNode in="SourceGraphic" />
+              </feMerge>
+            </filter>
+          </defs>
+          <path
+            d={`M${s[0]} ${s[1]} A${R} ${R} 0 0 1 ${e[0]} ${e[1]}`}
+            fill="none"
+            stroke="var(--border)"
+            strokeWidth={13}
             strokeLinecap="round"
           />
-          <circle cx={CX} cy={CY} r={4} fill="var(--text-secondary)" />
-
-          {/* Center readout */}
-          <text
-            x={CX}
-            y={CY - 2}
-            textAnchor="middle"
-            dominantBaseline="central"
-            style={{ fontFamily: "var(--font-heading)" }}
-            fontSize={46}
-            fontWeight={800}
-            fill="var(--text)"
-          >
-            {day}
-          </text>
-          <text
-            x={CX}
-            y={CY + 30}
-            textAnchor="middle"
-            fontSize={10}
-            fontWeight={600}
-            letterSpacing={2}
-            fill="var(--text-muted)"
-          >
-            OF {daysInMonth}
-          </text>
+          <path
+            d={`M${s[0]} ${s[1]} A${R} ${R} 0 0 1 ${pe[0]} ${pe[1]}`}
+            fill="none"
+            stroke="url(#mcArc)"
+            strokeWidth={13}
+            strokeLinecap="round"
+            filter="url(#mcGlow)"
+          />
+          <circle cx={pe[0]} cy={pe[1]} r={7} fill="var(--text)" />
+          <circle cx={pe[0]} cy={pe[1]} r={7} fill="none" stroke="var(--accent-gold)" strokeWidth={2} />
         </svg>
+        <div style={{ position: "absolute", top: 50, left: 0, right: 0, textAlign: "center" }}>
+          <div style={{ fontFamily: "var(--font-heading)", fontWeight: 800, fontSize: 54, lineHeight: 1, color: "var(--text)", letterSpacing: "-1.8px" }}>
+            {day}
+          </div>
+          <div style={{ fontWeight: 500, fontSize: 11, color: "var(--text-muted)", letterSpacing: "0.6px", marginTop: 4 }}>
+            DAY {day} OF {daysInMonth} · {elapsedPct}%
+          </div>
+        </div>
       </div>
 
-      {/* Legend */}
-      <div className="mt-2 flex flex-col">
-        <LegendRow
-          dot="var(--accent-green)"
-          labelColor="var(--accent-green-strong)"
-          label="Income"
-          value={formatCurrency(income)}
-          perDay={`$${incomePerDay.toFixed(1)}/d`}
-        />
-        <LegendRow
-          dot="var(--accent-red)"
-          labelColor="var(--accent-red-strong)"
-          label="Burn"
-          value={formatCurrency(burn)}
-          perDay={`$${burnPerDay.toFixed(1)}/d`}
-        />
-        <LegendRow
-          dot="var(--accent-gold)"
-          labelColor="var(--accent-gold-deep)"
-          label="Net"
-          value={formatCurrency(net, "$", true)}
-          valueColor="var(--accent-gold-deep)"
-          last
-        />
+      {/* Income / burn split bar */}
+      <div
+        style={{
+          display: "flex",
+          height: 8,
+          borderRadius: 999,
+          overflow: "hidden",
+          background: "var(--border)",
+          boxShadow: "inset 0 1px 2px rgba(0,0,0,0.35)",
+        }}
+      >
+        <div style={{ width: `${incShare * 100}%`, background: "linear-gradient(90deg, var(--accent-green-deep), var(--accent-green-strong))" }} />
+        <div style={{ width: `${(total > 0 ? 1 - incShare : 0) * 100}%`, background: "linear-gradient(90deg, var(--accent-red-strong), var(--accent-red-deep))" }} />
+      </div>
+      <div className="flex items-center justify-between" style={{ marginTop: 7 }}>
+        <span style={{ fontWeight: 500, fontSize: 10, color: "var(--accent-green-strong)", letterSpacing: "0.4px" }}>INCOME {incPct}%</span>
+        <span style={{ fontWeight: 500, fontSize: 10, color: "var(--accent-red-strong)", letterSpacing: "0.4px" }}>BURN {burnPct}%</span>
+      </div>
+
+      {/* Figure tiles */}
+      <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+        <StatTile accent="var(--accent-green)" label="INCOME" value={formatCurrency(income)} perDay={`$${Math.round(incomePerDay).toLocaleString()}/day`} />
+        <StatTile accent="var(--accent-red)" label="BURN" value={formatCurrency(burn)} perDay={`$${Math.round(burnPerDay).toLocaleString()}/day`} />
       </div>
     </div>
   );
 }
 
-function LegendRow({
-  dot,
-  labelColor,
-  label,
-  value,
-  perDay,
-  valueColor,
-  last,
-}: {
-  dot: string;
-  labelColor: string;
-  label: string;
-  value: string;
-  perDay?: string;
-  valueColor?: string;
-  last?: boolean;
-}) {
+function StatTile({ accent, label, value, perDay }: { accent: string; label: string; value: string; perDay: string }) {
   return (
     <div
-      className={`flex items-center justify-between py-2 ${last ? "" : "border-b border-[var(--hairline)]"}`}
+      style={{
+        flex: 1,
+        background: `color-mix(in srgb, ${accent} 8%, transparent)`,
+        border: `1px solid color-mix(in srgb, ${accent} 20%, transparent)`,
+        borderRadius: 14,
+        padding: "12px 12px 11px",
+      }}
     >
-      <div className="flex items-center gap-2">
-        <span className="w-2 h-2 rounded-full" style={{ backgroundColor: dot }} />
-        <span className="text-[11px] uppercase tracking-wider" style={{ color: labelColor }}>
-          {label}
-        </span>
+      <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 8 }}>
+        <span style={{ width: 6, height: 6, borderRadius: 2, background: accent, boxShadow: `0 0 7px color-mix(in srgb, ${accent} 80%, transparent)` }} />
+        <span style={{ fontWeight: 500, fontSize: 10, color: "var(--text-muted)", letterSpacing: "0.5px" }}>{label}</span>
       </div>
-      <div className="flex items-baseline gap-2">
-        <span
-          className="text-sm font-bold"
-          style={{ fontFamily: "var(--font-heading)", color: valueColor ?? "var(--text)" }}
-        >
-          {value}
-        </span>
-        {perDay && <span className="text-[11px] text-[var(--text-muted)]">· {perDay}</span>}
-      </div>
+      <div style={{ fontFamily: "var(--font-heading)", fontWeight: 700, fontSize: 19, color: "var(--text)", letterSpacing: "-0.4px" }}>{value}</div>
+      <div style={{ fontWeight: 400, fontSize: 11, color: "var(--text-faint)", marginTop: 2 }}>{perDay}</div>
     </div>
   );
 }
