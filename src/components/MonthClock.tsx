@@ -14,7 +14,6 @@ const CX = 120;
 const CY = 120;
 const RING_R = 90;
 const RING_W = 11;
-const GAP_DEG = 5; // small visual gap between the income and burn arcs
 
 // 0° at 12 o'clock, increasing clockwise.
 function polar(r: number, angleDeg: number) {
@@ -30,22 +29,19 @@ function arcPath(r: number, startAngle: number, endAngle: number) {
 }
 
 // Render one segment as either an arc (partial) or a full circle (~whole ring),
-// skipping it entirely when the share is negligible.
+// skipping it entirely when the share is negligible. The income and burn
+// segments share endpoints (no gap), so together they read as one continuous
+// two-tone ring; a hair of overlap keeps the seam clean against anti-aliasing.
+const SEAM_OVERLAP = 0.6; // degrees
 function Segment({ share, offsetDeg, color }: { share: number; offsetDeg: number; color: string }) {
   if (share <= 0.0005) return null;
   if (share >= 0.9995) {
     return <circle cx={CX} cy={CY} r={RING_R} fill="none" stroke={color} strokeWidth={RING_W} />;
   }
-  const start = offsetDeg + GAP_DEG / 2;
-  const end = offsetDeg + share * 360 - GAP_DEG / 2;
+  const start = offsetDeg - SEAM_OVERLAP;
+  const end = offsetDeg + share * 360 + SEAM_OVERLAP;
   return (
-    <path
-      d={arcPath(RING_R, start, end)}
-      fill="none"
-      stroke={color}
-      strokeWidth={RING_W}
-      strokeLinecap="round"
-    />
+    <path d={arcPath(RING_R, start, end)} fill="none" stroke={color} strokeWidth={RING_W} />
   );
 }
 
@@ -117,9 +113,12 @@ export default function MonthClock() {
           {/* Track */}
           <circle cx={CX} cy={CY} r={RING_R} fill="none" stroke="var(--border-strong)" strokeWidth={RING_W} />
 
-          {/* Income + burn arcs */}
-          <Segment share={incomeShare} offsetDeg={0} color="var(--accent-green)" />
+          {/* Income + burn arcs — one continuous two-tone ring starting at
+              12 o'clock. Burn drawn first, income on top so the seams stay clean
+              and green anchors the top. */}
           <Segment share={burnShare} offsetDeg={incomeShare * 360} color="var(--accent-red)" />
+          <Segment share={incomeShare} offsetDeg={0} color="var(--accent-green)" />
+
 
           {/* Hand */}
           <line
