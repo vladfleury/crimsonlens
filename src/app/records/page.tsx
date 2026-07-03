@@ -14,6 +14,23 @@ function getLastDayOfMonth(year: number, month: number): string {
   return `${year}-${String(month).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
+// Days to divide monthly expenses by: full days in the month for a closed
+// record, or days elapsed so far for the in-progress (live) month.
+function expenseDaysForRecord(r: MonthlyRecord): number {
+  const daysInMonth = new Date(r.year, r.month, 0).getDate();
+  if (r.isLive) {
+    const now = new Date();
+    if (now.getFullYear() === r.year && now.getMonth() + 1 === r.month) {
+      return Math.min(now.getDate(), daysInMonth);
+    }
+  }
+  return daysInMonth;
+}
+
+function formatPerDay(value: number): string {
+  return "$" + value.toLocaleString("en-US", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+}
+
 function savingsRateColor(pct: number): string {
   if (pct < 10) return "var(--accent-red-strong)";
   if (pct < 25) return "var(--accent-gold-deep)";
@@ -25,7 +42,7 @@ const COL_GROUPS = [
   { label: "PERIOD", cols: 1, color: "var(--surface-sunken)", textColor: "var(--text-muted)" },
   { label: "ASSETS & LIABILITIES", cols: 2, color: "var(--accent-green-soft-bg)", textColor: "var(--accent-green-strong)" },
   { label: "INCOME", cols: 2, color: "var(--accent-green-soft-bg)", textColor: "var(--accent-green-strong)" },
-  { label: "EXPENSES", cols: 2, color: "var(--accent-red-soft-bg)", textColor: "var(--accent-red-strong)" },
+  { label: "EXPENSES", cols: 3, color: "var(--accent-red-soft-bg)", textColor: "var(--accent-red-strong)" },
   { label: "PERFORMANCE", cols: 6, color: "var(--accent-gold-soft-bg)", textColor: "var(--accent-gold-deep)" },
 ];
 
@@ -33,7 +50,7 @@ const COL_HEADERS = [
   "Period",
   "Assets", "Liabilities",
   "Income", "Adj.",
-  "Expenses", "Adj. Expenses",
+  "Expenses", "Adj. Expenses", "Exp/Day",
   "Net Worth", "NW MoM", "Burn Rate", "Savings", "Savings Rate", "Debt Repayment",
 ];
 
@@ -383,6 +400,9 @@ function GroupRows({
   const yearRecordsWithData = records.filter((r) => r.income > 0 || r.adjustedExpenses > 0);
   const totalIncome = yearRecordsWithData.reduce((s, r) => s + r.income, 0);
   const totalExpenses = yearRecordsWithData.reduce((s, r) => s + r.adjustedExpenses, 0);
+  const totalExpDays = yearRecordsWithData
+    .filter((r) => r.adjustedExpenses > 0)
+    .reduce((s, r) => s + expenseDaysForRecord(r), 0);
   const totalSavings = yearRecordsWithData.reduce((s, r) => s + r.savings, 0);
   const avgBurnRate = yearRecordsWithData.length > 0
     ? yearRecordsWithData.reduce((s, r) => s + r.burnRate, 0) / yearRecordsWithData.length
@@ -397,7 +417,7 @@ function GroupRows({
       {/* Year section header */}
       <tr>
         <td
-          colSpan={13}
+          colSpan={14}
           className="px-4 py-2.5"
           style={{ backgroundColor: "var(--surface-sunken)", borderBottom: "2px solid var(--border-strong)" }}
         >
@@ -445,6 +465,7 @@ function GroupRows({
           </Cell>
           <Cell border>{r.expenses > 0 ? formatCurrency(r.expenses) : "—"}</Cell>
           <Cell border>{r.adjustedExpenses > 0 ? formatCurrency(r.adjustedExpenses) : "—"}</Cell>
+          <Cell border>{r.adjustedExpenses > 0 ? formatPerDay(r.adjustedExpenses / expenseDaysForRecord(r)) : "—"}</Cell>
           <Cell border color={r.netWorth >= 0 ? "var(--accent-green-strong)" : "var(--accent-red-strong)"} bold>{formatCurrency(r.netWorth)}</Cell>
           <Cell border>
             {r.netWorthMoM !== null ? (
@@ -482,6 +503,7 @@ function GroupRows({
           <TotalCell border />
           <TotalCell border />
           <TotalCell border bold color="var(--text-secondary)">{formatCurrency(totalExpenses)}</TotalCell>
+          <TotalCell border color="var(--text-secondary)">{totalExpDays > 0 ? formatPerDay(totalExpenses / totalExpDays) : ""}</TotalCell>
           <TotalCell border />
           <TotalCell border />
           <TotalCell border color="var(--text-secondary)">{formatPercent(avgBurnRate * 100)}</TotalCell>
