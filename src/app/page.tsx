@@ -8,6 +8,7 @@ import {
 import DashboardLayout from "@/components/DashboardLayout";
 import NetWorthChart from "@/components/NetWorthChart";
 import MoneyFlowChart from "@/components/MoneyFlowChart";
+import MonthClock from "@/components/MonthClock";
 import { useFinance } from "@/hooks/FinanceDataContext";
 import { useThemeColors } from "@/hooks/useThemeColors";
 import { formatCurrency, formatPercent, monthNames } from "@/data/mockData";
@@ -656,6 +657,9 @@ export default function NetWorthPage() {
 
           {/* ── RIGHT COLUMN (sticky sidebar) ── */}
           <div className="flex flex-col gap-4 lg:sticky lg:top-6">
+            {/* Month Clock */}
+            <MonthClock />
+
             {/* Goal Card */}
             <div className="glass-tinted glass-tinted--gold rounded-2xl p-5 relative">
               <div className="absolute top-4 right-4 w-11 h-11 rounded-full flex items-center justify-center text-[11px] font-bold text-white" style={{ backgroundColor: "var(--accent-red)" }}>

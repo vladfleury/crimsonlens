@@ -1,60 +1,56 @@
-// Google Finance proxy — scrapes USD-X quote pages server-side and returns
-// normalized "TARGET per 1 USD" rates. The client invokes this from
-// useFinanceData. Falls back is handled client-side (Frankfurter + NBRB).
+// FX proxy — fetches "TARGET per 1 USD" rates server-side and returns them
+// normalized. The client invokes this from useFinanceData (its own client-side
+// fallbacks still apply if this route is unreachable).
 //
-// We hit Google directly with a desktop User-Agent and the consent cookie so
-// EU IPs don't get bounced to the consent page.
+// Sources (stable, free, CORS-friendly, no scraping):
+//   - Frankfurter (ECB daily reference rates) for PLN + EUR.
+//   - NBRB (National Bank of the Republic of Belarus) for BYN.
+// We previously scraped Google Finance, but its HTML selectors kept breaking.
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-const PAIRS = [
-  { code: "PLN", url: "https://www.google.com/finance/quote/USD-PLN" },
-  { code: "EUR", url: "https://www.google.com/finance/quote/USD-EUR" },
-  { code: "BYN", url: "https://www.google.com/finance/quote/USD-BYN" },
-] as const;
+// frankfurter.app 301-redirects to the canonical .dev host; pin it directly.
+const FRANKFURTER_URL = "https://api.frankfurter.dev/v1/latest?from=USD&to=PLN,EUR";
+// parammode=2 selects the currency by ISO code rather than internal Cur_ID.
+const NBRB_URL = "https://api.nbrb.by/exrates/rates/USD?parammode=2";
 
-const REQUEST_HEADERS = {
-  "User-Agent":
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36",
-  Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-  "Accept-Language": "en-US,en;q=0.5",
-  Cookie: "CONSENT=YES+1",
-};
-
-function parseRate(html: string): number | null {
-  // Primary: <div ... data-last-price="3.60242616">
-  const m1 = html.match(/data-last-price="([\d.]+)"/);
-  if (m1) {
-    const n = parseFloat(m1[1]);
-    if (!isNaN(n) && n > 0) return n;
+// Fetch PLN + EUR from Frankfurter. Returns "TARGET per 1 USD" (from=USD).
+async function fetchFrankfurter(): Promise<{ PLN?: number; EUR?: number }> {
+  try {
+    const res = await fetch(FRANKFURTER_URL, { cache: "no-store" });
+    if (!res.ok) return {};
+    const data = await res.json();
+    const out: { PLN?: number; EUR?: number } = {};
+    const pln = data?.rates?.PLN;
+    const eur = data?.rates?.EUR;
+    if (typeof pln === "number" && pln > 0) out.PLN = pln;
+    if (typeof eur === "number" && eur > 0) out.EUR = eur;
+    return out;
+  } catch {
+    return {};
   }
-  // Fallback: <div class="YMlKec fxKbKc">3.6024</div>
-  const m2 = html.match(/class="YMlKec fxKbKc"[^>]*>([\d.,]+)/);
-  if (m2) {
-    const n = parseFloat(m2[1].replace(/,/g, ""));
-    if (!isNaN(n) && n > 0) return n;
-  }
-  return null;
 }
 
-async function fetchOne(url: string): Promise<number | null> {
+// Fetch BYN from NBRB. NBRB quotes BYN per Cur_Scale USD, so divide by scale to
+// get "BYN per 1 USD".
+async function fetchNbrb(): Promise<number | null> {
   try {
-    const res = await fetch(url, {
-      headers: REQUEST_HEADERS,
-      cache: "no-store",
-      redirect: "follow",
-    });
+    const res = await fetch(NBRB_URL, { cache: "no-store" });
     if (!res.ok) return null;
-    const html = await res.text();
-    return parseRate(html);
+    const data = await res.json();
+    const rate = data?.Cur_OfficialRate;
+    const scale =
+      typeof data?.Cur_Scale === "number" && data.Cur_Scale > 0 ? data.Cur_Scale : 1;
+    if (typeof rate === "number" && rate > 0) return rate / scale;
+    return null;
   } catch {
     return null;
   }
 }
 
-// Tiny in-memory cache so a burst of polls doesn't hammer Google. Google's
-// quote page already updates ~every minute, so 30s is plenty fresh.
+// Tiny in-memory cache so a burst of polls doesn't hammer the upstreams. The
+// underlying sources update at most daily, so 30s is plenty fresh.
 type Cache = { at: number; payload: unknown } | null;
 let cache: Cache = null;
 const CACHE_MS = 30_000;
@@ -66,23 +62,18 @@ export async function GET() {
     });
   }
 
-  const results = await Promise.all(
-    PAIRS.map(async ({ code, url }) => {
-      const rate = await fetchOne(url);
-      return [code, rate] as const;
-    })
-  );
+  const [frankfurter, byn] = await Promise.all([fetchFrankfurter(), fetchNbrb()]);
 
   const rates: Record<string, number> = {};
-  for (const [code, rate] of results) {
-    if (rate !== null) rates[code] = rate;
-  }
+  if (frankfurter.PLN !== undefined) rates.PLN = frankfurter.PLN;
+  if (frankfurter.EUR !== undefined) rates.EUR = frankfurter.EUR;
+  if (byn !== null) rates.BYN = byn;
 
   const payload = {
     base: "USD",
     rates, // PLN, EUR, BYN — each is "TARGET per 1 USD"
     fetchedAt: Date.now(),
-    source: "google-finance",
+    source: "frankfurter+nbrb",
   };
 
   if (Object.keys(rates).length > 0) {
