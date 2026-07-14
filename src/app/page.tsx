@@ -9,6 +9,7 @@ import DashboardLayout from "@/components/DashboardLayout";
 import NetWorthChart from "@/components/NetWorthChart";
 import MoneyFlowChart from "@/components/MoneyFlowChart";
 import MonthClock from "@/components/MonthClock";
+import YearlyPerformance from "@/components/YearlyPerformance";
 import { useFinance } from "@/hooks/FinanceDataContext";
 import { useThemeColors } from "@/hooks/useThemeColors";
 import { formatCurrency, formatPercent, monthNames } from "@/data/mockData";
@@ -648,10 +649,9 @@ export default function NetWorthPage() {
               <NetWorthChart />
             </div>
 
-            {/* Yearly Performance (3D Isometric) */}
+            {/* Yearly Performance */}
             <div className="glass-card rounded-2xl p-4 md:p-6">
-              <h2 className="text-lg font-bold mb-6" style={{ fontFamily: "var(--font-heading)" }}>Yearly Performance</h2>
-              <YearlyPerformance3D records={monthlyRecords} />
+              <YearlyPerformance records={monthlyRecords} />
             </div>
           </div>
 
@@ -1048,153 +1048,6 @@ function KPICard({
           <span className="text-[10px] md:text-[11px] text-[var(--text-muted)]">vs last mo.</span>
         </div>
       )}
-    </div>
-  );
-}
-
-/* ── 3D Isometric Chart — Assets up / Liabilities down (reference-based) ── */
-function YearlyPerformance3D({ records }: { records: { year: number; assets: number; liabilities: number; netWorth: number }[] }) {
-  const c = useThemeColors();
-
-  // Compute per-year data from records
-  const years2025 = records.filter((r) => r.year === 2025);
-  const years2026 = records.filter((r) => r.year === 2026);
-  const last2025 = years2025.length > 0 ? years2025[0] : null; // most recent first
-  const last2026 = years2026.length > 0 ? years2026[0] : null;
-
-  const data = [
-    { year: "2025", assets: last2025?.assets ?? 337, liabilities: Math.abs(last2025?.liabilities ?? -7187), nw: last2025?.netWorth ?? -6850 },
-    { year: "2026 (YTD)", assets: last2026?.assets ?? 2714, liabilities: Math.abs(last2026?.liabilities ?? -3966), nw: last2026?.netWorth ?? -1252 },
-  ];
-
-  const DX = 20;
-  const DY = 12;
-  const colWidth = 160;
-  const colGap = 56;
-  const padLeft = 48;
-  const zeroGap = 15;
-  const maxVal = Math.max(...data.map((d) => Math.max(d.assets, d.liabilities)), 1);
-
-  const scale = 150 / maxVal;
-  // Zero must render as nothing (no phantom block); tiny non-zero values keep a
-  // 10px visibility floor.
-  function sc(v: number) { return v <= 0 ? 0 : Math.max(10, v * scale); }
-
-  const maxAssetH = Math.max(...data.map((d) => sc(d.assets)));
-  const zeroY = 60 + maxAssetH + DY;
-
-  const columns = data.map((d, i) => {
-    const x = padLeft + i * (colWidth + colGap);
-    const aH = sc(d.assets);
-    const lH = sc(d.liabilities);
-    const assetY = zeroY - zeroGap - aH;
-    const liabY = zeroY + zeroGap;
-    const cx = x + colWidth / 2;
-    return { d, x, aH, lH, assetY, liabY, cx };
-  });
-
-  const maxLiabBottom = Math.max(...columns.map((c) => c.liabY + c.lH));
-  const svgW = padLeft + data.length * colWidth + (data.length - 1) * colGap + DX + 60;
-  const svgH = maxLiabBottom + DY + 50;
-
-  const assetColors = { front: c.green, top: c.greenSoft, right: c.greenDeep };
-  const liabColors = { front: c.liabFront, top: c.liabTop, right: c.liabRight };
-
-  return (
-    <div className="w-full">
-      <div className="mb-2 flex items-center justify-center gap-6">
-        <div className="flex items-center gap-2">
-          <div className="h-3.5 w-3.5 rounded-sm" style={{ backgroundColor: c.green }} />
-          <span className="text-xs font-medium text-[var(--text-muted)]">Assets</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <div className="h-3.5 w-3.5 rounded-sm" style={{ backgroundColor: c.liabFront }} />
-          <span className="text-xs font-medium text-[var(--text-muted)]">Liabilities</span>
-        </div>
-      </div>
-
-      <svg viewBox={`0 0 ${svgW} ${svgH}`} preserveAspectRatio="xMidYMid meet" className="mx-auto block w-full" style={{ maxHeight: 420 }}>
-        {columns.map((col, ci) => {
-          if (ci === columns.length - 1) return null;
-          const next = columns[ci + 1];
-          return (
-            <g key={`conn-${ci}`}>
-              <path
-                d={`M${col.x + colWidth},${col.assetY} L${next.x},${next.assetY} L${next.x},${zeroY - zeroGap} L${col.x + colWidth},${zeroY - zeroGap} Z`}
-                fill={assetColors.front}
-                opacity={0.12}
-              />
-              {(col.lH > 0 || next.lH > 0) && (
-                <path
-                  d={`M${col.x + colWidth},${col.liabY} L${next.x},${next.liabY} L${next.x},${next.liabY + next.lH} L${col.x + colWidth},${col.liabY + col.lH} Z`}
-                  fill={liabColors.front}
-                  opacity={0.12}
-                />
-              )}
-            </g>
-          );
-        })}
-
-        <line x1={padLeft - 30} y1={zeroY} x2={svgW - 30} y2={zeroY} stroke={c.baseline} strokeWidth="1.5" />
-        <text x={padLeft - 35} y={zeroY + 4} textAnchor="end" fill={c.axis} fontSize="13">$0</text>
-
-        {columns.map((col) => {
-          const { d, x, aH, lH, assetY, liabY, cx } = col;
-
-          return (
-            <g key={d.year}>
-              <path
-                d={`M${x + colWidth},${assetY} L${x + colWidth + DX},${assetY - DY} L${x + colWidth + DX},${assetY + aH - DY} L${x + colWidth},${assetY + aH} Z`}
-                fill={assetColors.right}
-              />
-              <path
-                d={`M${x},${assetY} L${x + DX},${assetY - DY} L${x + colWidth + DX},${assetY - DY} L${x + colWidth},${assetY} Z`}
-                fill={assetColors.top}
-              />
-              <rect x={x} y={assetY} width={colWidth} height={aH} fill={assetColors.front} rx={3} />
-
-              {lH > 0 && (
-                <>
-                  <path
-                    d={`M${x + colWidth},${liabY} L${x + colWidth + DX},${liabY - DY} L${x + colWidth + DX},${liabY + lH - DY} L${x + colWidth},${liabY + lH} Z`}
-                    fill={liabColors.right}
-                  />
-                  <path
-                    d={`M${x},${liabY + lH} L${x + DX},${liabY + lH - DY} L${x + colWidth + DX},${liabY + lH - DY} L${x + colWidth},${liabY + lH} Z`}
-                    fill={liabColors.top}
-                  />
-                  <rect x={x} y={liabY} width={colWidth} height={lH} fill={liabColors.front} rx={3} />
-                </>
-              )}
-
-              <text
-                x={cx + DX / 2}
-                y={assetY - DY - 14}
-                textAnchor="middle"
-                fontSize={16}
-                fontWeight={700}
-                fill={c.text}
-                style={{ fontFamily: "var(--font-heading)" }}
-              >
-                <title>{d.nw < 0 ? `-$${Math.abs(d.nw).toLocaleString()}` : `$${d.nw.toLocaleString()}`}</title>
-                {fmtCompact(d.nw)}
-              </text>
-
-              <text
-                x={cx}
-                y={liabY + lH + DY + 24}
-                textAnchor="middle"
-                fontSize={15}
-                fontWeight={500}
-                fill={c.axis}
-                style={{ fontFamily: "var(--font-body)" }}
-              >
-                {d.year}
-              </text>
-            </g>
-          );
-        })}
-      </svg>
     </div>
   );
 }
