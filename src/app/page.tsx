@@ -476,9 +476,16 @@ export default function NetWorthPage() {
                     Debt-free
                   </span>
                   <span className="truncate text-xs text-[var(--text-muted)]">
-                    {debts.reduce((s, d) => s + d.amount_paid, 0) > 0
-                      ? `· $${Math.round(debts.reduce((s, d) => s + d.amount_paid, 0)).toLocaleString()} repaid in full`
-                      : "· no obligations on the books"}
+                    {(() => {
+                      // Prefer the debts table; if rows were deleted after payoff,
+                      // fall back to peak historical liabilities from the records.
+                      const paid = debts.reduce((s, d) => s + d.amount_paid, 0);
+                      const peak = Math.max(0, ...monthlyRecords.map((r) => Math.abs(r.liabilities)));
+                      const repaid = paid > 0 ? paid : peak;
+                      return repaid > 0
+                        ? `· $${Math.round(repaid).toLocaleString()} repaid in full`
+                        : "· no obligations on the books";
+                    })()}
                   </span>
                 </div>
                 <button
