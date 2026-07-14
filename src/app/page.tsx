@@ -478,12 +478,13 @@ export default function NetWorthPage() {
                   <span className="truncate text-xs text-[var(--text-muted)]">
                     {(() => {
                       // Prefer the debts table; if rows were deleted after payoff,
-                      // fall back to peak historical liabilities from the records.
+                      // fall back to peak historical liabilities from the records
+                      // (phrased as a peak — the month-to-month path wasn't monotonic).
                       const paid = debts.reduce((s, d) => s + d.amount_paid, 0);
+                      if (paid > 0) return `· $${Math.round(paid).toLocaleString()} repaid in full`;
                       const peak = Math.max(0, ...monthlyRecords.map((r) => Math.abs(r.liabilities)));
-                      const repaid = paid > 0 ? paid : peak;
-                      return repaid > 0
-                        ? `· $${Math.round(repaid).toLocaleString()} repaid in full`
+                      return peak > 0
+                        ? `· cleared from a $${Math.round(peak).toLocaleString()} peak`
                         : "· no obligations on the books";
                     })()}
                   </span>
