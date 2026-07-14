@@ -3,13 +3,14 @@
 import { useState, useMemo, useCallback, useEffect } from "react";
 import {
   ComposedChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  Line, LineChart, AreaChart, Area, PieChart, Pie, Cell, ReferenceLine, LabelList,
+  Line, LineChart, AreaChart, Area, Cell, ReferenceLine, LabelList,
 } from "recharts";
 import DashboardLayout from "@/components/DashboardLayout";
 import NetWorthChart from "@/components/NetWorthChart";
 import MoneyFlowChart from "@/components/MoneyFlowChart";
 import MonthClock from "@/components/MonthClock";
 import YearlyPerformance from "@/components/YearlyPerformance";
+import AssetAllocation from "@/components/AssetAllocation";
 import { useFinance } from "@/hooks/FinanceDataContext";
 import { useThemeColors } from "@/hooks/useThemeColors";
 import { formatCurrency, formatPercent, monthNames } from "@/data/mockData";
@@ -285,29 +286,20 @@ export default function NetWorthPage() {
   const estimatedMonths = avgMonthlyGain > 0 ? Math.ceil(goalRemaining / avgMonthlyGain) : null;
 
   // Asset allocation from current_accounts (already computed above).
-  // Colors baked from theme tokens so the pie + swatches recolor on theme toggle.
-  const allocColors = useMemo(() => [c.greenDeep, c.greenSoft, c.gold], [c]);
-  const assetAllocation = useMemo(() => (totalAccountsUSD > 0 ? [
-    { name: "PLN Holdings", value: Math.round((plnTotal / plnUsdRate / totalAccountsUSD) * 100), color: allocColors[0] },
-    { name: "EUR Holdings", value: Math.round((eurTotal * usdEurRate / totalAccountsUSD) * 100), color: allocColors[1] },
-    { name: "USD Holdings", value: Math.round((usdTotal / totalAccountsUSD) * 100), color: allocColors[2] },
-  ] : [
-    { name: "PLN Holdings", value: 73, color: allocColors[0] },
-    { name: "EUR Holdings", value: 22, color: allocColors[1] },
-    { name: "USD Holdings", value: 5, color: allocColors[2] },
-  ]), [totalAccountsUSD, plnTotal, plnUsdRate, eurTotal, usdEurRate, usdTotal, allocColors]);
+  // Colors come from theme tokens so swatches recolor on theme toggle; identity
+  // is stable per currency (PLN deep green, EUR pale green, USD gold).
+  const plnUSD = plnTotal / plnUsdRate;
+  const eurUSD = eurTotal * usdEurRate;
+  const allocHoldings = useMemo(() => [
+    { code: "PLN", symbol: "zł", native: plnTotal, usd: plnUSD, color: c.greenDeep },
+    { code: "EUR", symbol: "€", native: eurTotal, usd: eurUSD, color: c.greenSoft },
+    { code: "USD", symbol: "$", native: usdTotal, usd: usdTotal, color: c.gold },
+  ], [plnTotal, plnUSD, eurTotal, eurUSD, usdTotal, c]);
 
   // Month change — current live accounts vs previous month's assets from DB
   const prevMonth = monthlyRecords.find((r) => !r.isLive) ?? monthlyRecords[1];
   const prevAssetsUSD = prevMonth?.assets ?? 0;
   const monthChangeTotal = Math.round(totalAccountsUSD - prevAssetsUSD);
-  const plnUSD = plnTotal / plnUsdRate;
-  const eurUSD = eurTotal * usdEurRate;
-  const monthChangeBreakdown = [
-    { currency: "PLN", amount: Math.round(plnTotal), symbol: "zł", prefix: "", usdValue: plnUSD },
-    { currency: "EUR", amount: Math.round(eurTotal), symbol: "€", prefix: "", usdValue: eurUSD },
-    { currency: "USD", amount: Math.round(usdTotal), symbol: "$", prefix: "", usdValue: usdTotal },
-  ];
 
   // Yearly performance
   const income2025 = monthlyRecords.filter((r) => r.year === 2025).reduce((s, r) => s + r.income, 0);
@@ -315,9 +307,6 @@ export default function NetWorthPage() {
 
   const years: YearFilter[] = ["all", "2026", "2025"];
   const yearLabels: Record<YearFilter, string> = { all: "All Time", "2026": "2026", "2025": "2025" };
-
-  const maxChange = Math.max(...monthChangeBreakdown.map((b) => b.usdValue), 1);
-  const changeBarColors = allocColors;
 
   // ── Debt CRUD (writes ONLY to the debts table) ──
   const handleDebtField = useCallback(
@@ -724,80 +713,12 @@ export default function NetWorthPage() {
               </div>
             </div>
 
-            {/* Asset Allocation + Month Change */}
-            <div className="glass-tinted rounded-2xl p-5">
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="text-sm font-bold text-[var(--text)]" style={{ fontFamily: "var(--font-heading)" }}>Asset Allocation</h3>
-                <span className="px-3 py-1 rounded-full text-sm font-bold text-white" style={{ backgroundColor: "var(--accent-green-deep)" }}>
-                  ${Math.round(monthChangeTotal).toLocaleString()}
-                </span>
-              </div>
-              <div className="flex items-center gap-3">
-                <div className="relative flex-shrink-0" style={{ width: 130, height: 130 }}>
-                  <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                      <Pie
-                        data={assetAllocation}
-                        cx="50%"
-                        cy="50%"
-                        innerRadius={35}
-                        outerRadius={60}
-                        paddingAngle={3}
-                        dataKey="value"
-                        strokeWidth={0}
-                      >
-                        {assetAllocation.map((entry, i) => (
-                          <Cell key={i} fill={entry.color} />
-                        ))}
-                      </Pie>
-                    </PieChart>
-                  </ResponsiveContainer>
-                  <div className="absolute inset-0 flex items-center justify-center flex-col">
-                    <span className="text-[8px] text-[var(--text-muted)]">Total</span>
-                    <span className="text-sm font-bold text-[var(--text)]" style={{ fontFamily: "var(--font-heading)" }}>${Math.round(totalAccountsUSD).toLocaleString()}</span>
-                  </div>
-                </div>
-                <div className="flex flex-col gap-3 flex-1">
-                  {assetAllocation.map((a) => (
-                    <div key={a.name}>
-                      <div className="flex items-center gap-1.5 mb-0.5">
-                        <span className="w-2 h-2 rounded-full" style={{ backgroundColor: a.color }} />
-                        <span className="text-[11px] text-[var(--text-muted)]">{a.name.replace(" Holdings", "")}</span>
-                      </div>
-                      <span className="text-lg font-bold text-[var(--text)]" style={{ fontFamily: "var(--font-heading)" }}>{a.value}%</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Month Change breakdown */}
-              <div className="mt-4 pt-4" style={{ borderTop: "1px solid var(--hairline)" }}>
-                <div className="flex items-end gap-2 h-[60px] relative mt-1">
-                  <div className="absolute bottom-[30px] left-0 right-0 border-t border-dashed" style={{ borderColor: "var(--border)" }} />
-                  {monthChangeBreakdown.map((b, i) => {
-                    const h = maxChange > 0 ? (b.usdValue / maxChange) * 50 : 0;
-                    return (
-                      <div key={b.currency} className="flex-1 flex flex-col items-center">
-                        <div className="rounded-md w-full" style={{ height: `${Math.max(h, 3)}px`, backgroundColor: changeBarColors[i], opacity: 0.85 }} />
-                      </div>
-                    );
-                  })}
-                </div>
-                <div className="flex justify-between mt-2">
-                  {monthChangeBreakdown.map((b, i) => (
-                    <div key={b.currency} className="flex flex-col items-center text-center flex-1">
-                      <div className="flex items-center gap-1 mb-0.5">
-                        <span className="w-2 h-2 rounded-full" style={{ backgroundColor: changeBarColors[i] }} />
-                        <span className="text-[10px] text-[var(--accent-green-deep)]">{b.currency}</span>
-                      </div>
-                      <span className="text-xs font-semibold text-[var(--accent-green-strong)]">
-                        {b.prefix}{b.symbol}{b.amount.toLocaleString()}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
+            {/* Asset Allocation */}
+            <AssetAllocation
+              holdings={allocHoldings}
+              total={totalAccountsUSD}
+              monthChange={monthChangeTotal}
+            />
 
             {/* Exchange Rates */}
             <div className="glass-card rounded-2xl p-4">
