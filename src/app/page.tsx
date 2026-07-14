@@ -1076,7 +1076,9 @@ function YearlyPerformance3D({ records }: { records: { year: number; assets: num
   const maxVal = Math.max(...data.map((d) => Math.max(d.assets, d.liabilities)), 1);
 
   const scale = 150 / maxVal;
-  function sc(v: number) { return Math.max(10, v * scale); }
+  // Zero must render as nothing (no phantom block); tiny non-zero values keep a
+  // 10px visibility floor.
+  function sc(v: number) { return v <= 0 ? 0 : Math.max(10, v * scale); }
 
   const maxAssetH = Math.max(...data.map((d) => sc(d.assets)));
   const zeroY = 60 + maxAssetH + DY;
@@ -1122,11 +1124,13 @@ function YearlyPerformance3D({ records }: { records: { year: number; assets: num
                 fill={assetColors.front}
                 opacity={0.12}
               />
-              <path
-                d={`M${col.x + colWidth},${col.liabY} L${next.x},${next.liabY} L${next.x},${next.liabY + next.lH} L${col.x + colWidth},${col.liabY + col.lH} Z`}
-                fill={liabColors.front}
-                opacity={0.12}
-              />
+              {(col.lH > 0 || next.lH > 0) && (
+                <path
+                  d={`M${col.x + colWidth},${col.liabY} L${next.x},${next.liabY} L${next.x},${next.liabY + next.lH} L${col.x + colWidth},${col.liabY + col.lH} Z`}
+                  fill={liabColors.front}
+                  opacity={0.12}
+                />
+              )}
             </g>
           );
         })}
@@ -1149,15 +1153,19 @@ function YearlyPerformance3D({ records }: { records: { year: number; assets: num
               />
               <rect x={x} y={assetY} width={colWidth} height={aH} fill={assetColors.front} rx={3} />
 
-              <path
-                d={`M${x + colWidth},${liabY} L${x + colWidth + DX},${liabY - DY} L${x + colWidth + DX},${liabY + lH - DY} L${x + colWidth},${liabY + lH} Z`}
-                fill={liabColors.right}
-              />
-              <path
-                d={`M${x},${liabY + lH} L${x + DX},${liabY + lH - DY} L${x + colWidth + DX},${liabY + lH - DY} L${x + colWidth},${liabY + lH} Z`}
-                fill={liabColors.top}
-              />
-              <rect x={x} y={liabY} width={colWidth} height={lH} fill={liabColors.front} rx={3} />
+              {lH > 0 && (
+                <>
+                  <path
+                    d={`M${x + colWidth},${liabY} L${x + colWidth + DX},${liabY - DY} L${x + colWidth + DX},${liabY + lH - DY} L${x + colWidth},${liabY + lH} Z`}
+                    fill={liabColors.right}
+                  />
+                  <path
+                    d={`M${x},${liabY + lH} L${x + DX},${liabY + lH - DY} L${x + colWidth + DX},${liabY + lH - DY} L${x + colWidth},${liabY + lH} Z`}
+                    fill={liabColors.top}
+                  />
+                  <rect x={x} y={liabY} width={colWidth} height={lH} fill={liabColors.front} rx={3} />
+                </>
+              )}
 
               <text
                 x={cx + DX / 2}
