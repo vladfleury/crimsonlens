@@ -437,30 +437,58 @@ export default function NetWorthPage() {
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-5 items-start">
           {/* ── LEFT COLUMN ── */}
           <div className="flex flex-col gap-5">
-            {/* Debt Analysis */}
-            <div>
-              <h2 className="text-lg font-bold mb-4" style={{ fontFamily: "var(--font-heading)" }}>Debt Analysis</h2>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {debts.map((debt) => (
-                  <DebtCard
-                    key={debt.id}
-                    debt={debt}
-                    symbol={debtSymbols[debt.currency] ?? "$"}
-                    onField={handleDebtField}
-                    onDelete={handleDeleteDebt}
+            {/* Debt Analysis — full section only while a debt needs attention.
+                Once everything is repaid it collapses to a slim debt-free strip
+                (the KPI row and Yearly Performance already tell the $0 story).
+                A just-added debt (total 0) counts as active so it stays editable. */}
+            {debts.some((d) => d.total_amount - d.amount_paid > 0 || d.total_amount === 0) ? (
+              <div>
+                <h2 className="text-lg font-bold mb-4" style={{ fontFamily: "var(--font-heading)" }}>Debt Analysis</h2>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {debts.map((debt) => (
+                    <DebtCard
+                      key={debt.id}
+                      debt={debt}
+                      symbol={debtSymbols[debt.currency] ?? "$"}
+                      onField={handleDebtField}
+                      onDelete={handleDeleteDebt}
+                    />
+                  ))}
+                  <button
+                    onClick={handleAddDebt}
+                    className="rounded-2xl p-5 flex flex-col items-center justify-center gap-1.5 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--surface-2)] transition-colors border-2 border-dashed border-[var(--border)] min-h-[150px]"
+                  >
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+                    </svg>
+                    New debt
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="glass-card rounded-2xl px-5 py-3.5 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <span
+                    className="h-1.5 w-1.5 flex-shrink-0 rounded-full bg-[var(--accent-green)]"
+                    style={{ boxShadow: "0 0 0 3px var(--accent-green-soft-bg)" }}
                   />
-                ))}
+                  <span className="text-sm font-bold text-[var(--text)]" style={{ fontFamily: "var(--font-heading)" }}>
+                    Debt-free
+                  </span>
+                  <span className="truncate text-xs text-[var(--text-muted)]">
+                    {debts.reduce((s, d) => s + d.amount_paid, 0) > 0
+                      ? `· $${Math.round(debts.reduce((s, d) => s + d.amount_paid, 0)).toLocaleString()} repaid in full`
+                      : "· no obligations on the books"}
+                  </span>
+                </div>
                 <button
                   onClick={handleAddDebt}
-                  className="rounded-2xl p-5 flex flex-col items-center justify-center gap-1.5 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--surface-2)] transition-colors border-2 border-dashed border-[var(--border)] min-h-[150px]"
+                  className="flex-shrink-0 rounded-full border border-dashed border-[var(--border)] px-3.5 py-1.5 text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--surface-2)] transition-colors"
                 >
-                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
-                  </svg>
-                  New debt
+                  + New debt
                 </button>
               </div>
-            </div>
+            )}
 
             {/* Assets vs Liabilities */}
             <div className="glass-card rounded-2xl p-4 md:p-6">
