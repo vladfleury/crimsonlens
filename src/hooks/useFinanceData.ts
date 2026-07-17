@@ -132,16 +132,17 @@ export function useFinanceData(): UseFinanceDataReturn {
   const [exchangeRatesUpdatedAt, setExchangeRatesUpdatedAt] = useState<number | null>(null);
 
   // ── Fetch live exchange rates ──
-  // Primary source: Google Finance, proxied through our /api/fx route (server-side
-  //   scrape, avoids CORS, returns "TARGET per 1 USD" for PLN, EUR, BYN).
-  // Fallback: Frankfurter (ECB daily ref rates) for PLN+EUR, NBRB for BYN.
+  // Primary source: our /api/fx route (Yahoo intraday quotes for PLN+EUR with a
+  //   Frankfurter fallback, NBRB for BYN; returns "TARGET per 1 USD").
+  // Client-side fallback if the route itself is unreachable: Frankfurter (ECB
+  //   daily ref rates) for PLN+EUR, NBRB for BYN.
   // Polling more frequently than the source updates is harmless.
   const refreshExchangeRates = useCallback(async () => {
     let pln: number | null = null;
     let eurPerUsd: number | null = null; // EUR per 1 USD (we invert for usdEurRate)
     let byn: number | null = null;
 
-    // Try Google first
+    // Try our server route first (intraday quotes)
     try {
       const res = await fetch("/api/fx", { cache: "no-store" });
       if (res.ok) {
@@ -154,10 +155,10 @@ export function useFinanceData(): UseFinanceDataReturn {
       // ignore, fall through to fallbacks
     }
 
-    // Fallback: Frankfurter for PLN/EUR (only fill in what Google missed)
+    // Fallback: Frankfurter for PLN/EUR (only fill in what the route missed)
     if (pln === null || eurPerUsd === null) {
       try {
-        const res = await fetch("https://api.frankfurter.app/latest?from=USD&to=PLN,EUR", {
+        const res = await fetch("https://api.frankfurter.dev/v1/latest?from=USD&to=PLN,EUR", {
           cache: "no-store",
         });
         if (res.ok) {
