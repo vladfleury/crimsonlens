@@ -5,11 +5,11 @@ import DashboardLayout from "@/components/DashboardLayout";
 import { useFinance } from "@/hooks/FinanceDataContext";
 import { formatCurrencyDecimal } from "@/data/mockData";
 
-type Currency = "PLN" | "EUR" | "USD";
+type Currency = "PLN" | "EUR" | "USD" | "BYN";
 
 export default function AccountsPage() {
   const {
-    accounts, plnUsdRate, usdEurRate,
+    accounts, plnUsdRate, usdEurRate, bynUsdRate,
     updateAccount, insertAccount, deleteAccount, updateAccountFull,
     isLoading, error, refetch,
   } = useFinance();
@@ -29,17 +29,24 @@ export default function AccountsPage() {
   const usdTotal = accounts
     .filter((a) => a.currency === "USD")
     .reduce((sum, a) => sum + a.amount, 0);
+  const bynTotal = accounts
+    .filter((a) => a.currency === "BYN")
+    .reduce((sum, a) => sum + a.amount, 0);
 
-  const totalUSD = plnTotal / plnUsdRate + eurTotal * usdEurRate + usdTotal;
+  // bynUsdRate is "BYN per 1 USD" (NBRB official), so divide to get USD.
+  const totalUSD = plnTotal / plnUsdRate + eurTotal * usdEurRate + usdTotal + bynTotal / bynUsdRate;
 
   const totalPLN = totalUSD * plnUsdRate;
+  const hasByn = accounts.some((a) => a.currency === "BYN");
   const holdingsCards = [
     { label: "PLN Holdings", value: formatCurrencyDecimal(plnTotal, "") + " zł", color: "var(--accent-green-deep)" },
     { label: "USD Holdings", value: formatCurrencyDecimal(usdTotal, "$"), color: "var(--accent-green-strong)" },
     { label: "EUR Holdings", value: "€" + formatCurrencyDecimal(eurTotal, ""), color: "var(--accent-green-strong)" },
+    // BYN card appears once a BYN account exists — no phantom zero-card before that.
+    ...(hasByn ? [{ label: "BYN Holdings", value: "Br " + formatCurrencyDecimal(bynTotal, ""), color: "var(--accent-gold-deep)" }] : []),
   ];
 
-  const currencySymbols: Record<string, string> = { PLN: "zł", EUR: "€", USD: "$" };
+  const currencySymbols: Record<string, string> = { PLN: "zł", EUR: "€", USD: "$", BYN: "Br" };
 
   const handleUpdateBalance = useCallback(async (id: number, value: number) => {
     try {
@@ -150,7 +157,7 @@ export default function AccountsPage() {
         </div>
 
         {/* Holdings Cards */}
-        <div className="grid grid-cols-3 gap-2 sm:gap-4 mb-6 md:mb-8">
+        <div className={`grid ${holdingsCards.length === 4 ? "grid-cols-2 sm:grid-cols-4" : "grid-cols-3"} gap-2 sm:gap-4 mb-6 md:mb-8`}>
           {holdingsCards.map((card) => (
             <div key={card.label} className="glass-card rounded-2xl p-3 md:p-5 min-w-0">
               <p className="text-[10px] sm:text-xs text-[var(--text-muted)] mb-0.5 sm:mb-1 truncate">{card.label}</p>
@@ -191,6 +198,7 @@ export default function AccountsPage() {
                       <option value="PLN">PLN</option>
                       <option value="USD">USD</option>
                       <option value="EUR">EUR</option>
+                      <option value="BYN">BYN</option>
                     </select>
                   </div>
                 </div>
@@ -205,7 +213,7 @@ export default function AccountsPage() {
                       style={{ fontFamily: "var(--font-heading)" }}
                     />
                     <span className="ml-1 text-sm md:text-base font-bold text-[var(--text-muted)]" style={{ fontFamily: "var(--font-heading)" }}>
-                      {account.currency === "PLN" ? "zł" : account.currency === "USD" ? "$" : "€"}
+                      {sym}
                     </span>
                   </div>
                   <button
@@ -242,6 +250,7 @@ export default function AccountsPage() {
                   <option value="PLN">PLN</option>
                   <option value="USD">USD</option>
                   <option value="EUR">EUR</option>
+                  <option value="BYN">BYN</option>
                 </select>
                 <input
                   type="number"

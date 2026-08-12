@@ -61,10 +61,12 @@ export default function NetWorthPage() {
   const plnAccounts = accounts.filter((a) => a.currency === "PLN" && a.is_liquid);
   const eurAccounts = accounts.filter((a) => a.currency === "EUR" && a.is_liquid);
   const usdAccounts = accounts.filter((a) => a.currency === "USD" && a.is_liquid);
+  const bynAccounts = accounts.filter((a) => a.currency === "BYN" && a.is_liquid);
   const plnTotal = plnAccounts.reduce((s, a) => s + a.amount, 0);
   const eurTotal = eurAccounts.reduce((s, a) => s + a.amount, 0);
   const usdTotal = usdAccounts.reduce((s, a) => s + a.amount, 0);
-  const totalAccountsUSD = plnTotal / plnUsdRate + eurTotal * usdEurRate + usdTotal;
+  const bynTotal = bynAccounts.reduce((s, a) => s + a.amount, 0);
+  const totalAccountsUSD = plnTotal / plnUsdRate + eurTotal * usdEurRate + usdTotal + bynTotal / bynUsdRate;
   const liveLiabilitiesUSD = -grandmaRemaining;
 
   const filteredRecords = useMemo(() => {
@@ -290,11 +292,15 @@ export default function NetWorthPage() {
   // is stable per currency (PLN deep green, EUR pale green, USD gold).
   const plnUSD = plnTotal / plnUsdRate;
   const eurUSD = eurTotal * usdEurRate;
+  const bynUSD = bynTotal / bynUsdRate;
+  // BYN joins the ledger once a BYN account exists — no phantom row before that.
+  const hasBynAccounts = accounts.some((a) => a.currency === "BYN");
   const allocHoldings = useMemo(() => [
     { code: "PLN", symbol: "zł", native: plnTotal, usd: plnUSD, color: c.greenDeep },
     { code: "EUR", symbol: "€", native: eurTotal, usd: eurUSD, color: c.greenSoft },
     { code: "USD", symbol: "$", native: usdTotal, usd: usdTotal, color: c.gold },
-  ], [plnTotal, plnUSD, eurTotal, eurUSD, usdTotal, c]);
+    ...(hasBynAccounts ? [{ code: "BYN", symbol: "Br ", native: bynTotal, usd: bynUSD, color: c.goldDeep }] : []),
+  ], [plnTotal, plnUSD, eurTotal, eurUSD, usdTotal, bynTotal, bynUSD, hasBynAccounts, c]);
 
   // Month change — current live accounts vs previous month's assets from DB
   const prevMonth = monthlyRecords.find((r) => !r.isLive) ?? monthlyRecords[1];

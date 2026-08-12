@@ -275,9 +275,10 @@ export function useFinanceData(): UseFinanceDataReturn {
       .reduce((sum, a) => {
         if (a.currency === "PLN") return sum + a.amount / plnUsdRate;
         if (a.currency === "EUR") return sum + a.amount * usdEurRate;
+        if (a.currency === "BYN") return sum + a.amount / bynUsdRate;
         return sum + a.amount; // USD
       }, 0);
-  }, [accountRows, plnUsdRate, usdEurRate]);
+  }, [accountRows, plnUsdRate, usdEurRate, bynUsdRate]);
 
   // ── Compute virtual current-month liabilities from debts ──
   const liveLiabilities = useMemo(() => {
