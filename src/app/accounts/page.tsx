@@ -20,17 +20,21 @@ export default function AccountsPage() {
   const [newBalance, setNewBalance] = useState("");
   const [newIlliquid, setNewIlliquid] = useState(false);
 
+  // Liquid accounts only — illiquid ones (deposits etc.) are listed below but
+  // never counted into totals, matching the dashboard's liveAssets rule.
+  // (Previously only PLN filtered on is_liquid, so an illiquid USD/EUR/BYN
+  // account leaked into Total Assets.)
   const plnTotal = accounts
     .filter((a) => a.currency === "PLN" && a.is_liquid)
     .reduce((sum, a) => sum + a.amount, 0);
   const eurTotal = accounts
-    .filter((a) => a.currency === "EUR")
+    .filter((a) => a.currency === "EUR" && a.is_liquid)
     .reduce((sum, a) => sum + a.amount, 0);
   const usdTotal = accounts
-    .filter((a) => a.currency === "USD")
+    .filter((a) => a.currency === "USD" && a.is_liquid)
     .reduce((sum, a) => sum + a.amount, 0);
   const bynTotal = accounts
-    .filter((a) => a.currency === "BYN")
+    .filter((a) => a.currency === "BYN" && a.is_liquid)
     .reduce((sum, a) => sum + a.amount, 0);
 
   // bynUsdRate is "BYN per 1 USD" (NBRB official), so divide to get USD.
