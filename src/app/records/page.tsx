@@ -371,6 +371,7 @@ export default function RecordsPage() {
           mode="edit"
           record={editingRecord}
           incomeSource={getIncomeSource(editingRecord)}
+          incomeAgg={monthlyIncomeAgg.find((a) => a.year === editingRecord.year && a.month === editingRecord.month)}
           onClose={() => setEditingRecord(null)}
           onSave={upsertRecord}
         />
@@ -738,10 +739,14 @@ function LiveRecordPanel({ record, currentMonthIncome, incomeBySource, onClose, 
 }
 
 /* ── Standard Record Panel (Add / Edit non-live) ── */
-function RecordPanel({ mode, record, incomeSource, onClose, onSave }: {
+function RecordPanel({ mode, record, incomeSource, incomeAgg, onClose, onSave }: {
   mode: "add" | "edit";
   record?: MonthlyRecord;
   incomeSource?: { kufar: number; tokMedia: number; other: number };
+  // Aggregated income from income_transactions for this record's month. Since
+  // the migration, this is the real income source; the legacy editable fields
+  // below only apply to months with no transactions.
+  incomeAgg?: { total: number; bySource: Record<string, number> };
   onClose: () => void;
   onSave: (al: { year: number; date: string; assets: number; liabilities: number }, inc: { year: number; date: string; kufar: number; tokmedia: number; other: number; total: number; expense_adjustment?: number }) => Promise<void>;
 }) {
@@ -767,6 +772,14 @@ function RecordPanel({ mode, record, incomeSource, onClose, onSave }: {
   const update = (field: string, value: string) => {
     setForm((f) => ({ ...f, [field]: value === "" ? 0 : Number(value) }));
   };
+
+  // Income lives in income_transactions post-migration; when transactions exist
+  // for this month, show them read-only (the legacy fields stay untouched and
+  // are passed through on save, so nothing is clobbered).
+  const hasTxIncome = !!incomeAgg && incomeAgg.total > 0;
+  const txSourceEntries = incomeAgg
+    ? Object.entries(incomeAgg.bySource).sort(([, a], [, b]) => b - a)
+    : [];
 
   const totalIncome = form.kufar + form.tokmedia + form.other;
 
@@ -824,27 +837,50 @@ function RecordPanel({ mode, record, incomeSource, onClose, onSave }: {
             </div>
           </div>
 
-          <div className="mb-5">
-            <h3 className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wide mb-2" style={{ fontFamily: "var(--font-heading)" }}>Income by Source</h3>
-            <div className="mb-2">
-              <label className="text-xs text-[var(--text-muted)] mb-1 block">Kufar</label>
-              <input type="number" value={form.kufar} onChange={(e) => update("kufar", e.target.value)} className="w-full px-3 py-2 rounded-xl bg-[var(--input-bg)] text-sm outline-none border-none" />
+          {hasTxIncome ? (
+            /* Income by Source — read-only from income_transactions */
+            <div className="mb-5">
+              <h3 className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wide mb-2" style={{ fontFamily: "var(--font-heading)" }}>Income by Source</h3>
+              <p className="text-xl font-bold mb-2" style={{ fontFamily: "var(--font-heading)", color: "var(--accent-green-strong)" }}>
+                ${incomeAgg!.total.toLocaleString()}
+              </p>
+              {txSourceEntries.length > 0 && (
+                <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-[var(--text-muted)]">
+                  {txSourceEntries.map(([source, amount], i) => (
+                    <span key={source}>
+                      {source}: <span className="font-medium">${amount.toLocaleString()}</span>
+                      {i < txSourceEntries.length - 1 && <span className="text-[var(--text-faint)] ml-1">|</span>}
+                    </span>
+                  ))}
+                </div>
+              )}
+              <p className="text-[10px] text-[var(--text-faint)] mt-2">Recorded as income transactions — to change it, edit the transactions in the list on the Records page</p>
             </div>
-            <div className="mb-2">
-              <label className="text-xs text-[var(--text-muted)] mb-1 block">TokMedia</label>
-              <input type="number" value={form.tokmedia} onChange={(e) => update("tokmedia", e.target.value)} className="w-full px-3 py-2 rounded-xl bg-[var(--input-bg)] text-sm outline-none border-none" />
-            </div>
-            <div className="mb-2">
-              <label className="text-xs text-[var(--text-muted)] mb-1 block">Other</label>
-              <input type="number" value={form.other} onChange={(e) => update("other", e.target.value)} className="w-full px-3 py-2 rounded-xl bg-[var(--input-bg)] text-sm outline-none border-none" />
-            </div>
-          </div>
+          ) : (
+            <>
+              <div className="mb-5">
+                <h3 className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wide mb-2" style={{ fontFamily: "var(--font-heading)" }}>Income by Source</h3>
+                <div className="mb-2">
+                  <label className="text-xs text-[var(--text-muted)] mb-1 block">Kufar</label>
+                  <input type="number" value={form.kufar} onChange={(e) => update("kufar", e.target.value)} className="w-full px-3 py-2 rounded-xl bg-[var(--input-bg)] text-sm outline-none border-none" />
+                </div>
+                <div className="mb-2">
+                  <label className="text-xs text-[var(--text-muted)] mb-1 block">TokMedia</label>
+                  <input type="number" value={form.tokmedia} onChange={(e) => update("tokmedia", e.target.value)} className="w-full px-3 py-2 rounded-xl bg-[var(--input-bg)] text-sm outline-none border-none" />
+                </div>
+                <div className="mb-2">
+                  <label className="text-xs text-[var(--text-muted)] mb-1 block">Other</label>
+                  <input type="number" value={form.other} onChange={(e) => update("other", e.target.value)} className="w-full px-3 py-2 rounded-xl bg-[var(--input-bg)] text-sm outline-none border-none" />
+                </div>
+              </div>
 
-          {/* Total Income — read-only */}
-          <div className="mb-5">
-            <label className="text-xs text-[var(--text-muted)] mb-1 block">Total Income (auto-calculated)</label>
-            <input type="text" value={`$${totalIncome.toLocaleString()}`} readOnly className="w-full px-3 py-2 rounded-xl bg-[var(--surface-sunken)] text-sm outline-none border-none text-[var(--text-muted)] cursor-not-allowed" />
-          </div>
+              {/* Total Income — read-only */}
+              <div className="mb-5">
+                <label className="text-xs text-[var(--text-muted)] mb-1 block">Total Income (auto-calculated)</label>
+                <input type="text" value={`$${totalIncome.toLocaleString()}`} readOnly className="w-full px-3 py-2 rounded-xl bg-[var(--surface-sunken)] text-sm outline-none border-none text-[var(--text-muted)] cursor-not-allowed" />
+              </div>
+            </>
+          )}
 
           {/* Expense Adjustment */}
           <div className="mb-5">
