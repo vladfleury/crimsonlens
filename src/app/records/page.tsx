@@ -1010,12 +1010,16 @@ function IncomeTransactionPanel({ mode, tx, existingSources, plnUsdRate, usdEurR
   const [saving, setSaving] = useState(false);
   const [showSuggestions, setShowSuggestions] = useState(false);
 
+  // exchange_rate is stored as "currency units per 1 USD" (usdAmount = amount / rate):
+  // PLN → plnUsdRate (PLN per USD), EUR → 1/usdEurRate (EUR per USD),
+  // BYN → bynUsdRate (BYN per USD; it was inverted here once — 1/bynUsdRate —
+  // which auto-filled ~0.33 and tripled the USD amount).
   const getDefaultRate = (currency: string) => {
     switch (currency) {
       case "USD": return 1;
       case "PLN": return plnUsdRate;
       case "EUR": return 1 / usdEurRate;
-      case "BYN": return 1 / bynUsdRate;
+      case "BYN": return bynUsdRate;
       default: return 1;
     }
   };
@@ -1114,7 +1118,7 @@ function IncomeTransactionPanel({ mode, tx, existingSources, plnUsdRate, usdEurR
 
           {form.currency !== "USD" && (
             <div className="mb-4">
-              <label className="text-xs text-[var(--text-muted)] mb-1 block">Exchange Rate (1 {form.currency} = ? USD)</label>
+              <label className="text-xs text-[var(--text-muted)] mb-1 block">Exchange Rate (1 USD = ? {form.currency})</label>
               <input type="number" step="0.0001" value={form.exchange_rate || ""} onChange={(e) => setForm((f) => ({ ...f, exchange_rate: e.target.value === "" ? 0 : Number(e.target.value) }))} className="w-full px-3 py-2 rounded-xl bg-[var(--input-bg)] text-sm outline-none border-none" />
             </div>
           )}
