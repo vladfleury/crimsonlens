@@ -576,7 +576,7 @@ function LiveRecordPanel({ record, currentMonthIncome, incomeBySource, onClose, 
   incomeBySource: Record<string, number>;
   onClose: () => void;
   onSaveAdjustment: (inc: { year: number; date: string; kufar: number; tokmedia: number; other: number; total: number; expense_adjustment?: number }) => Promise<void>;
-  onFinalize: (al: { year: number; date: string; assets: number; liabilities: number }, inc: { year: number; date: string; kufar: number; tokmedia: number; other: number; total: number; expense_adjustment?: number }) => Promise<void>;
+  onFinalize: (al: { year: number; date: string; assets: number; liabilities: number; investment_gain?: number }, inc: { year: number; date: string; kufar: number; tokmedia: number; other: number; total: number; expense_adjustment?: number }) => Promise<void>;
 }) {
   const initAdj = record.expenseAdjustment ?? 0;
   const [form, setForm] = useState({
@@ -615,7 +615,7 @@ function LiveRecordPanel({ record, currentMonthIncome, incomeBySource, onClose, 
     setSaveError(null);
     try {
       await onFinalize(
-        { year: record.year, date, assets: record.assets, liabilities: record.liabilities },
+        { year: record.year, date, assets: record.assets, liabilities: record.liabilities, investment_gain: record.investmentGain },
         { year: record.year, date, kufar: 0, tokmedia: 0, other: 0, total: 0, expense_adjustment: computedAdjustment },
       );
       onClose();

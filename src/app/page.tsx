@@ -9,6 +9,8 @@ import DashboardLayout from "@/components/DashboardLayout";
 import NetWorthChart from "@/components/NetWorthChart";
 import MoneyFlowChart from "@/components/MoneyFlowChart";
 import MonthClock from "@/components/MonthClock";
+import PortfolioCard from "@/components/PortfolioCard";
+import { holdingColors } from "@/lib/portfolio";
 import YearlyPerformance from "@/components/YearlyPerformance";
 import AssetAllocation from "@/components/AssetAllocation";
 import { useFinance } from "@/hooks/FinanceDataContext";
@@ -34,7 +36,7 @@ function fmtCompact(n: number): string {
 export default function NetWorthPage() {
   const c = useThemeColors();
   const {
-    monthlyRecords, accounts, debts, settings,
+    monthlyRecords, accounts, debts, settings, portfolio,
     plnUsdRate, bynUsdRate, usdEurRate,
     setPlnUsdRate, setBynUsdRate, setUsdEurRate,
     updateSetting, insertDebt, updateDebt, deleteDebt,
@@ -67,6 +69,8 @@ export default function NetWorthPage() {
   const usdTotal = usdAccounts.reduce((s, a) => s + a.amount, 0);
   const bynTotal = bynAccounts.reduce((s, a) => s + a.amount, 0);
   const totalAccountsUSD = plnTotal / plnUsdRate + eurTotal * usdEurRate + usdTotal + bynTotal / bynUsdRate;
+  // Live assets = liquid cash + investment portfolio at market value (same as the hook's live row).
+  const liveTotalUSD = totalAccountsUSD + portfolio.totalValueUsd;
   const liveLiabilitiesUSD = -grandmaRemaining;
 
   const filteredRecords = useMemo(() => {
@@ -225,9 +229,9 @@ export default function NetWorthPage() {
   }, [areaData]);
 
   const current = monthlyRecords[0];
-  const currentAssets = current?.isLive ? Math.round(totalAccountsUSD) : (current?.assets ?? 0);
+  const currentAssets = current?.isLive ? Math.round(liveTotalUSD) : (current?.assets ?? 0);
   const currentIncome = current?.income ?? 0;
-  const currentNW = current?.isLive ? Math.round(totalAccountsUSD + liveLiabilitiesUSD) : (current ? current.netWorth : 0);
+  const currentNW = current?.isLive ? Math.round(liveTotalUSD + liveLiabilitiesUSD) : (current ? current.netWorth : 0);
   const currentMonth = current ? monthNames[current.month - 1] : "—";
 
   // ── KPI sparklines + deltas vs. previous month ──
@@ -295,17 +299,21 @@ export default function NetWorthPage() {
   const bynUSD = bynTotal / bynUsdRate;
   // BYN joins the ledger once a BYN account exists — no phantom row before that.
   const hasBynAccounts = accounts.some((a) => a.currency === "BYN");
+  // The portfolio joins the ledger (slate, distinct from the cash greens/golds) once there is a position.
+  const portfolioUSD = portfolio.totalValueUsd;
+  const hasPortfolio = portfolio.hasPositions;
   const allocHoldings = useMemo(() => [
     { code: "PLN", symbol: "zł", native: plnTotal, usd: plnUSD, color: c.greenDeep },
     { code: "EUR", symbol: "€", native: eurTotal, usd: eurUSD, color: c.greenSoft },
     { code: "USD", symbol: "$", native: usdTotal, usd: usdTotal, color: c.gold },
     ...(hasBynAccounts ? [{ code: "BYN", symbol: "Br ", native: bynTotal, usd: bynUSD, color: c.goldDeep }] : []),
-  ], [plnTotal, plnUSD, eurTotal, eurUSD, usdTotal, bynTotal, bynUSD, hasBynAccounts, c]);
+    ...(hasPortfolio ? [{ code: "INV", symbol: "$", native: portfolioUSD, usd: portfolioUSD, color: holdingColors(c.isDark)[1] }] : []),
+  ], [plnTotal, plnUSD, eurTotal, eurUSD, usdTotal, bynTotal, bynUSD, hasBynAccounts, hasPortfolio, portfolioUSD, c]);
 
   // Month change — current live accounts vs previous month's assets from DB
   const prevMonth = monthlyRecords.find((r) => !r.isLive) ?? monthlyRecords[1];
   const prevAssetsUSD = prevMonth?.assets ?? 0;
-  const monthChangeTotal = Math.round(totalAccountsUSD - prevAssetsUSD);
+  const monthChangeTotal = Math.round(liveTotalUSD - prevAssetsUSD);
 
   // Yearly performance
   const income2025 = monthlyRecords.filter((r) => r.year === 2025).reduce((s, r) => s + r.income, 0);
@@ -691,6 +699,9 @@ export default function NetWorthPage() {
             {/* Month Clock */}
             <MonthClock />
 
+            {/* Portfolio */}
+            <PortfolioCard />
+
             {/* Goal Card */}
             <div className="glass-tinted glass-tinted--gold rounded-2xl p-5 relative">
               <div className="absolute top-4 right-4 w-11 h-11 rounded-full flex items-center justify-center text-[11px] font-bold text-white" style={{ backgroundColor: "var(--accent-red)" }}>
@@ -722,7 +733,7 @@ export default function NetWorthPage() {
             {/* Asset Allocation */}
             <AssetAllocation
               holdings={allocHoldings}
-              total={totalAccountsUSD}
+              total={liveTotalUSD}
               monthChange={monthChangeTotal}
             />
 

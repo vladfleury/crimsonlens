@@ -8,6 +8,9 @@ export interface AssetsLiabilitiesRow {
   date: string; // "YYYY-MM-DD"
   assets: number;
   liabilities: number;
+  // Cumulative unrealized investment P/L (USD) at this snapshot. Lets the
+  // expense derivation value the portfolio at cost basis.
+  investment_gain?: number;
 }
 
 export interface IncomeDataRow {
@@ -152,9 +155,11 @@ export async function upsertAssetsLiabilities(row: Omit<AssetsLiabilitiesRow, "i
 
   if (existing && existing.length > 0) {
     // Update existing row
+    const updateData: Record<string, unknown> = { year: row.year, assets: row.assets, liabilities: row.liabilities };
+    if (row.investment_gain !== undefined) updateData.investment_gain = row.investment_gain;
     const { error } = await supabase
       .from("assets_liabilities")
-      .update({ year: row.year, assets: row.assets, liabilities: row.liabilities })
+      .update(updateData)
       .eq("id", existing[0].id);
     if (error) throw error;
   } else {
@@ -272,6 +277,66 @@ export async function updateIncomeTransaction(id: number, tx: Partial<Omit<Incom
 export async function deleteIncomeTransaction(id: number) {
   const { error } = await supabase
     .from("income_transactions")
+    .delete()
+    .eq("id", id);
+  if (error) throw error;
+}
+
+// ── Investment Transactions (one row per purchase; prices are fetched live) ──
+
+export interface InvestmentTransaction {
+  id: number;
+  date: string;
+  ticker: string;
+  currency: string;
+  price: number; // bought at, native currency
+  shares: number;
+  fee: number; // native currency
+  quote_symbol?: string | null; // Yahoo symbol override, e.g. VUAA.DE
+  notes?: string | null;
+  created_at?: string;
+}
+
+export async function fetchInvestmentTransactions(): Promise<InvestmentTransaction[]> {
+  const { data, error } = await supabase
+    .from("investment_transactions")
+    .select("*")
+    .order("date", { ascending: false });
+  if (error) throw error;
+  return data ?? [];
+}
+
+export async function insertInvestmentTransaction(tx: {
+  date: string;
+  ticker: string;
+  currency: string;
+  price: number;
+  shares: number;
+  fee: number;
+  quote_symbol?: string | null;
+  notes?: string | null;
+}) {
+  const { data, error } = await supabase
+    .from("investment_transactions")
+    .insert(tx)
+    .select();
+  if (error) throw error;
+  return data;
+}
+
+export async function updateInvestmentTransaction(id: number, tx: Partial<Omit<InvestmentTransaction, "id" | "created_at">>) {
+  const { data, error } = await supabase
+    .from("investment_transactions")
+    .update(tx)
+    .eq("id", id)
+    .select();
+  if (error) throw error;
+  return data;
+}
+
+export async function deleteInvestmentTransaction(id: number) {
+  const { error } = await supabase
+    .from("investment_transactions")
     .delete()
     .eq("id", id);
   if (error) throw error;

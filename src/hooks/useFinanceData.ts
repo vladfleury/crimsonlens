@@ -20,6 +20,11 @@ import {
   updateAccountFull as apiUpdateAccountFull,
   type AssetsLiabilitiesRow, type IncomeDataRow, type AccountRow, type DebtRow, type SettingRow,
   type IncomeTransaction,
+  fetchInvestmentTransactions,
+  insertInvestmentTransaction as apiInsertInvTx,
+  updateInvestmentTransaction as apiUpdateInvTx,
+  deleteInvestmentTransaction as apiDeleteInvTx,
+  type InvestmentTransaction,
 } from "@/lib/data";
 
 // ── Derived record type (client-side computed) ──
@@ -40,6 +45,10 @@ export interface MonthlyRecord {
   burnRate: number;
   savingsRate: number;
   netWorthMoM: number | null;
+  // Investments: cumulative unrealized P/L (USD) at this snapshot, and its
+  // change during the month — reported separately from income and expenses.
+  investmentGain: number;
+  investmentReturn: number;
   // Live indicator
   isLive?: boolean;
 }
@@ -61,12 +70,48 @@ export interface MonthlyIncomeAgg {
   expenseAdjustment: number;
 }
 
+export interface Quote {
+  price: number;
+  currency: string;
+  name: string | null;
+  asOf: number;
+}
+
+export interface PortfolioHolding {
+  ticker: string;
+  currency: string; // native currency of the position
+  symbol: string; // quote symbol used for pricing
+  shares: number;
+  cost: number; // native: Σ(price × shares + fee)
+  price: number | null; // latest native price, null while unpriced
+  value: number; // native; falls back to cost while unpriced
+  gain: number; // native
+  costUsd: number;
+  valueUsd: number;
+  gainUsd: number;
+  share: number; // 0-100, of total value
+  priced: boolean;
+}
+
+export interface PortfolioSummary {
+  holdings: PortfolioHolding[];
+  totalCostUsd: number;
+  totalValueUsd: number;
+  gainUsd: number;
+  gainPct: number;
+  quotes: Record<string, Quote>;
+  quotesUpdatedAt: number | null;
+  hasPositions: boolean;
+}
+
 export interface UseFinanceDataReturn {
   // Raw data
   monthlyRecords: MonthlyRecord[];
   incomeBySource: IncomeSourceRecord[];
   incomeTransactions: IncomeTransaction[];
   monthlyIncomeAgg: MonthlyIncomeAgg[];
+  investmentTransactions: InvestmentTransaction[];
+  portfolio: PortfolioSummary;
   accounts: AccountRow[];
   debts: DebtRow[];
   settings: SettingRow[];
@@ -94,6 +139,10 @@ export interface UseFinanceDataReturn {
   insertIncomeTx: (tx: Parameters<typeof apiInsertIncomeTx>[0]) => Promise<void>;
   updateIncomeTx: (id: number, tx: Parameters<typeof apiUpdateIncomeTx>[1]) => Promise<void>;
   deleteIncomeTx: (id: number) => Promise<void>;
+  insertInvestmentTx: (tx: Parameters<typeof apiInsertInvTx>[0]) => Promise<void>;
+  updateInvestmentTx: (id: number, tx: Parameters<typeof apiUpdateInvTx>[1]) => Promise<void>;
+  deleteInvestmentTx: (id: number) => Promise<void>;
+  refreshQuotes: () => Promise<void>;
   insertAccount: (row: Omit<AccountRow, "id">) => Promise<AccountRow>;
   deleteAccount: (id: number) => Promise<void>;
   setPlnUsdRate: (v: number) => void;
@@ -113,6 +162,13 @@ function getLastDayOfMonth(year: number, month: number): string {
   return `${year}-${String(month).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
+// Yahoo symbol for a position: explicit override, else EUR listings on Xetra.
+export function quoteSymbolFor(tx: { ticker: string; currency: string; quote_symbol?: string | null }): string {
+  if (tx.quote_symbol) return tx.quote_symbol.toUpperCase();
+  const t = tx.ticker.toUpperCase();
+  return tx.currency === "EUR" ? `${t}.DE` : t;
+}
+
 export function useFinanceData(): UseFinanceDataReturn {
   // Raw Supabase data
   const [alRows, setAlRows] = useState<AssetsLiabilitiesRow[]>([]);
@@ -121,6 +177,9 @@ export function useFinanceData(): UseFinanceDataReturn {
   const [accountRows, setAccountRows] = useState<AccountRow[]>([]);
   const [debtRows, setDebtRows] = useState<DebtRow[]>([]);
   const [settingRows, setSettingRows] = useState<SettingRow[]>([]);
+  const [invTxRows, setInvTxRows] = useState<InvestmentTransaction[]>([]);
+  const [quotes, setQuotes] = useState<Record<string, Quote>>({});
+  const [quotesUpdatedAt, setQuotesUpdatedAt] = useState<number | null>(null);
 
   // Exchange rates (live fetched or from settings)
   const [plnUsdRate, setPlnUsdRate] = useState(3.7154);
@@ -211,18 +270,20 @@ export function useFinanceData(): UseFinanceDataReturn {
       setIsLoading(true);
       setError(null);
 
-      const [al, inc, acc, dbt, sett, inctx] = await Promise.all([
+      const [al, inc, acc, dbt, sett, inctx, invtx] = await Promise.all([
         fetchAssetsLiabilities(),
         fetchIncomeData(),
         fetchAccounts(),
         fetchDebts(),
         fetchSettings(),
         fetchIncomeTransactions(),
+        fetchInvestmentTransactions(),
       ]);
 
       setAlRows(al);
       setIncomeRows(inc);
       setIncomeTxRows(inctx);
+      setInvTxRows(invtx);
       setAccountRows(acc);
       setDebtRows(dbt);
       setSettingRows(sett);
@@ -268,8 +329,85 @@ export function useFinanceData(): UseFinanceDataReturn {
     };
   }, [refreshExchangeRates]);
 
-  // ── Compute virtual current-month assets from LIQUID accounts only ──
-  const liveAssets = useMemo(() => {
+  // ── Live stock/ETF quotes for the portfolio (same Yahoo pipeline as FX) ──
+  const quoteSymbols = useMemo(
+    () => Array.from(new Set(invTxRows.map((tx) => quoteSymbolFor(tx)))).sort(),
+    [invTxRows]
+  );
+  const refreshQuotes = useCallback(async () => {
+    if (quoteSymbols.length === 0) return;
+    try {
+      const res = await fetch(`/api/quotes?symbols=${encodeURIComponent(quoteSymbols.join(","))}`, { cache: "no-store" });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data && typeof data.quotes === "object") {
+        setQuotes((prev) => ({ ...prev, ...(data.quotes as Record<string, Quote>) }));
+        setQuotesUpdatedAt(Date.now());
+      }
+    } catch {
+      // keep last known quotes
+    }
+  }, [quoteSymbols]);
+
+  useEffect(() => {
+    refreshQuotes();
+    const POLL_MS = 60_000;
+    const id = setInterval(refreshQuotes, POLL_MS);
+    const onVisibility = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "visible") refreshQuotes();
+    };
+    if (typeof document !== "undefined") document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      clearInterval(id);
+      if (typeof document !== "undefined") document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [refreshQuotes]);
+
+  // ── Portfolio: aggregate purchases per ticker, valued at live quotes ──
+  const portfolio = useMemo((): PortfolioSummary => {
+    const toUsd = (amount: number, currency: string) => {
+      if (currency === "EUR") return amount * usdEurRate;
+      if (currency === "PLN") return amount / plnUsdRate;
+      if (currency === "BYN") return amount / bynUsdRate;
+      return amount; // USD
+    };
+    const byTicker = new Map<string, { ticker: string; currency: string; symbol: string; shares: number; cost: number }>();
+    for (const tx of invTxRows) {
+      const key = tx.ticker.toUpperCase();
+      const h = byTicker.get(key) ?? { ticker: key, currency: tx.currency, symbol: quoteSymbolFor(tx), shares: 0, cost: 0 };
+      h.shares += Number(tx.shares);
+      h.cost += Number(tx.price) * Number(tx.shares) + Number(tx.fee ?? 0);
+      byTicker.set(key, h);
+    }
+    const rows = Array.from(byTicker.values()).map((h) => {
+      const q = quotes[h.symbol];
+      const price = q && q.price > 0 ? q.price : null;
+      const value = price !== null ? price * h.shares : h.cost;
+      const gain = value - h.cost;
+      const costUsd = toUsd(h.cost, h.currency);
+      const valueUsd = toUsd(value, h.currency);
+      return { ...h, price, value, gain, costUsd, valueUsd, gainUsd: valueUsd - costUsd, share: 0, priced: price !== null };
+    });
+    const totalValueUsd = rows.reduce((s, r) => s + r.valueUsd, 0);
+    const totalCostUsd = rows.reduce((s, r) => s + r.costUsd, 0);
+    const holdings: PortfolioHolding[] = rows
+      .map((r) => ({ ...r, share: totalValueUsd > 0 ? (r.valueUsd / totalValueUsd) * 100 : 0 }))
+      .sort((a, b) => b.valueUsd - a.valueUsd);
+    const gainUsd = totalValueUsd - totalCostUsd;
+    return {
+      holdings,
+      totalCostUsd,
+      totalValueUsd,
+      gainUsd,
+      gainPct: totalCostUsd > 0 ? (gainUsd / totalCostUsd) * 100 : 0,
+      quotes,
+      quotesUpdatedAt,
+      hasPositions: holdings.length > 0,
+    };
+  }, [invTxRows, quotes, quotesUpdatedAt, usdEurRate, plnUsdRate, bynUsdRate]);
+
+  // ── Compute virtual current-month assets: LIQUID accounts + portfolio at market ──
+  const liveCash = useMemo(() => {
     return accountRows
       .filter((a) => a.is_liquid)
       .reduce((sum, a) => {
@@ -279,6 +417,9 @@ export function useFinanceData(): UseFinanceDataReturn {
         return sum + a.amount; // USD
       }, 0);
   }, [accountRows, plnUsdRate, usdEurRate, bynUsdRate]);
+  const liveAssets = liveCash + portfolio.totalValueUsd;
+  // Unrealized P/L carried inside liveAssets; the expense math strips it back out.
+  const liveInvestmentGain = portfolio.gainUsd;
 
   // ── Compute virtual current-month liabilities from debts ──
   const liveLiabilities = useMemo(() => {
@@ -383,6 +524,7 @@ export function useFinanceData(): UseFinanceDataReturn {
           date: currentMonthDate,
           assets: Math.round(liveAssets),
           liabilities: Math.round(liveLiabilities),
+          investment_gain: Math.round(liveInvestmentGain),
         },
       ];
     }
@@ -407,8 +549,14 @@ export function useFinanceData(): UseFinanceDataReturn {
       // Previous month net worth
       const prevNW = i > 0 ? alWithLive[i - 1].assets + alWithLive[i - 1].liabilities : null;
 
-      // Expenses = prev_net_worth + income - net_worth
-      const rawExpenses = prevNW !== null ? prevNW + totalIncome - netWorth : 0;
+      // Investment return this month = change in cumulative unrealized P/L.
+      const investmentGain = al.investment_gain ?? 0;
+      const prevGain = i > 0 ? (alWithLive[i - 1].investment_gain ?? 0) : 0;
+      const investmentReturn = i > 0 ? investmentGain - prevGain : 0;
+
+      // Expenses = prev_net_worth + income - net_worth, with the portfolio valued
+      // at cost basis (unrealized P/L stripped) so market moves never read as spending.
+      const rawExpenses = prevNW !== null ? prevNW + totalIncome - netWorth + investmentReturn : 0;
       const expenseAdjustment = incAgg?.expenseAdjustment ?? incLegacy?.expense_adjustment ?? 0;
       const adjustedExpenses = Math.max(0, rawExpenses - expenseAdjustment);
 
@@ -443,6 +591,8 @@ export function useFinanceData(): UseFinanceDataReturn {
         burnRate,
         savingsRate,
         netWorthMoM,
+        investmentGain,
+        investmentReturn,
         isLive: al.date === liveDate,
       };
     });
@@ -469,6 +619,8 @@ export function useFinanceData(): UseFinanceDataReturn {
           burnRate: 0,
           savingsRate: 1,
           netWorthMoM: null,
+          investmentGain: 0,
+          investmentReturn: 0,
         });
       }
     }
@@ -481,7 +633,7 @@ export function useFinanceData(): UseFinanceDataReturn {
 
     // Return in most-recent-first order (matching old mockData convention)
     return records.reverse();
-  }, [alRows, incomeRows, monthlyIncomeAgg, accountRows, liveAssets, liveLiabilities]);
+  }, [alRows, incomeRows, monthlyIncomeAgg, accountRows, liveAssets, liveLiabilities, liveInvestmentGain]);
 
   // ── Compute income by source (legacy from income_data, kept for backward compat) ──
   const incomeBySource = useMemo(() => {
@@ -632,11 +784,28 @@ export function useFinanceData(): UseFinanceDataReturn {
     await fetchAll();
   }, [fetchAll]);
 
+  const insertInvestmentTx = useCallback(async (tx: Parameters<typeof apiInsertInvTx>[0]) => {
+    await apiInsertInvTx(tx);
+    await fetchAll();
+  }, [fetchAll]);
+
+  const updateInvestmentTx = useCallback(async (id: number, tx: Parameters<typeof apiUpdateInvTx>[1]) => {
+    await apiUpdateInvTx(id, tx);
+    await fetchAll();
+  }, [fetchAll]);
+
+  const deleteInvestmentTx = useCallback(async (id: number) => {
+    await apiDeleteInvTx(id);
+    await fetchAll();
+  }, [fetchAll]);
+
   return {
     monthlyRecords,
     incomeBySource,
     incomeTransactions: incomeTxRows,
     monthlyIncomeAgg,
+    investmentTransactions: invTxRows,
+    portfolio,
     accounts: accountRows,
     debts: debtRows,
     settings: settingRows,
@@ -658,6 +827,10 @@ export function useFinanceData(): UseFinanceDataReturn {
     insertIncomeTx,
     updateIncomeTx,
     deleteIncomeTx,
+    insertInvestmentTx,
+    updateInvestmentTx,
+    deleteInvestmentTx,
+    refreshQuotes,
     insertAccount,
     deleteAccount,
     setPlnUsdRate,
